@@ -1,0 +1,4 @@
+http://svn.example.com/foobar_v3 foobar
+http://www.example.com/svn/baz
+http://reflectasm.googlecode.com/svn reflect-asm
+http://kryo.googlecode.com/svn
