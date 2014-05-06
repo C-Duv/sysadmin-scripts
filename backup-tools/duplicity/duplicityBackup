@@ -660,7 +660,6 @@ sub executeDuplicityPathBackup
 		loggedError 'STDOUT: ' . $backupResult->{stdout} unless $backupResult->{stdout} eq '';
 		loggedError 'STDERR: ' . $backupResult->{stderr} unless $backupResult->{stderr} eq '';
 		
-		loggedDebug '--- /executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
 		$return = 0;
 	}
 	else {
