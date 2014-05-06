@@ -1,0 +1,84 @@
+# 
+# Backup configuration
+# 
+
+---
+backupedServerName: ServerFooBar      # Friendly name of the server
+workingBasePath:    /var/tmp/backup/wrkdir/ # Temporary local storage base path (make sure the path ends with a slash (/))
+log_debug:          0             # Set to 0 to ignore debug messages. Set to 1 to enable (will be logged)
+
+Services:
+  # Syntax:
+  # <TYPE>:
+  #   <SERVICE_ID>:
+  #     enabled: integer           # Set to 0 so skip this service (won't be backuped). Set to 1 to enable (will be backuped)
+  #     type:    string            # Type of the service (possible values: SERVICE_TYPE_*)
+  #     subdir:  string            # Subdirectory where to store data backups
+  #     options: Associative array # Service-specific options (IP addresses, credentials, etc.)
+  
+  FileSystem: # FS Services
+    fs:
+      enabled: 1
+      type:    FileSystem
+      subdir:  fs/
+      options:
+        archiveMethod: /bin/tar -c
+        archiveFileExtension: .tar
+        compressMethod: /bin/gzip -9
+        compressFileExtension: .gz
+        pathsToBackup:
+        - /etc/
+        - /root/
+        - /var/www/*
+        - /var/lib/redmine/
+  
+  Mysql: # MySQL Services
+    mysql:
+      enabled: 1
+      type:    Mysql
+      subdir:  mysql/
+      options:
+        host:                  localhost
+        port:                  3306
+        user:                  backup # Usually a backup-only user (with SELECT, SHOW DATABASES, SHOW VIEW and LOCK TABLES privileges)
+        password:              MYSQL_PASSWORD
+        compressMethod:        /bin/gzip -9
+        compressFileExtension: .gz
+        mysqlclientfilepath:   /usr/bin/mysql
+        mysqldumpfilepath:     /usr/bin/mysqldump
+    mysql-3307:
+      enabled: 0
+      type:    Mysql
+      subdir:  mysql-other/
+      options:
+        host:                 MYSQL_HOST
+        port:                 3307
+        user:                 MYSQL_USER # Usually a backup-only user (with SELECT, SHOW DATABASES, SHOW VIEW and LOCK TABLES privileges)
+        password:             MYSQL_PASSWORD
+        compressMethod:       /bin/gzip -9
+        compressFileExtension: .gz
+        mysqlclientfilepath:  /usr/bin/mysql
+        mysqldumpfilepath:    /usr/bin/mysqldump
+  
+  Ldap: # LDAP Services
+    ldap:
+      enabled: 0
+      type:    Ldap
+      subdir:  ldap/
+      options:
+        slapcatFilepath:       /usr/sbin/slapcat
+        slapcatConfigFilepath:  # If empty (set to undef), slapcat will use it's default value. see slapcat(8) "-f" option
+        dumpFileExtension:     .ldif
+        compressMethod:        /bin/gzip -9
+        compressFileExtension: .gz
+        dnTreesToBackup:       # List of trees to backup (see slapcat(8) "-s" option):
+        - dc=company,dc=tld
+
+ExternalStorage: # External Storage (FTP)
+    ftpClient:                 /usr/bin/lftp
+    host:                      FTP_HOST
+    port:                      21
+    user:                      FTP_LOGIN
+    password:                  FTP_PASSWORD
+    path:                      /backups # Absolute path on FTP directory where to store backups
+    numberOfDailyBackupToKeep: 5

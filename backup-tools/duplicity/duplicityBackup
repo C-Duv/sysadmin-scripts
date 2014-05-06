@@ -1,0 +1,1602 @@
+#!/usr/bin/perl
+
+#
+# Backup script
+#
+# Backups data of file system and various services via Duplicity
+#
+# @version 0.1
+#
+# @requires duplicity (Encrypted backup using rsync algorithm)
+#                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
+# @requires Perl "Switch"
+# @requires Perl "List::Util"
+# @requires Perl "Hash::Merge::Simple"
+# @requires Perl "Getopt::Long"
+# @requires Perl "Pod::Usage"
+# @requires Perl "Log::Message::Simple"
+# @requires Perl "DateTime"
+# @requires Perl "Date::Parse"
+# @requires Perl "File::Basename"
+# @requires Perl "File::chmod"
+# @requires Perl "File::Path"
+# @requires Perl "File::Spec"
+# @requires Perl "URI"
+# @requires Perl "Capture::Tiny"
+# @requires Perl "YAML::XS"
+
+
+##### Modules #####
+use Switch;
+use List::Util qw(max reduce);
+use Hash::Merge::Simple qw/ merge /; # Debian package "libhash-merge-simple-perl"
+
+use Getopt::Long;
+use Pod::Usage;
+use Log::Message::Simple qw[:STD :CARP];
+# use Data::Dumper; # Used for debuging
+
+use DateTime; # Debian package "libdatetime-perl"
+use Date::Parse; # Debian package "libtimedate-perl"
+
+use File::Basename;
+use File::chmod qw(getmod); # Debian package "libfile-chmod-perl"
+use File::Path qw(remove_tree make_path);
+use File::Spec;
+
+use URI;
+
+use Capture::Tiny ':all'; # Debian package "libcapture-tiny-perl"
+use YAML::XS; # Debian package "libyaml-libyaml-perl"
+##### /Modules #####
+
+
+##### Constants #####
+use constant {
+	SERVICE_TYPE_FILESYSTEM => 'FileSystem',
+	SERVICE_TYPE_LDAP       => 'Ldap',
+	SERVICE_TYPE_MYSQL      => 'Mysql',
+	STORAGE_TYPE_FILESYSTEM => 'FileSystem',
+	STORAGE_TYPE_FTP        => 'Ftp',
+	STORAGE_TYPE_FTPS       => 'Ftps',
+	STORAGE_TYPE_SFTP       => 'Ssh',
+	STORAGE_TYPE_SSH        => 'Ssh',
+};
+##### /Constants #####
+
+
+
+##### Arguments #####
+
+my $man = 0;
+my $help = 0;
+my $debugMode = 0;           # Not in debug mode by default
+my $verbose = 0;             # Not verbose by default #TODO: Implement
+my @configurationFiles = (); # List of configuration files to use
+my $createExampleConfig;     # No configuration example file to create by default
+my $mainAction = 'backup';   # Perform "backup" action by default
+
+GetOptions (
+	'help|?'          => \$help,
+	'man'             => \$man,
+	'debug!'          => \$debugMode,
+	'verbose+'        => \$verbose,
+	'config=s'        => \@configurationFiles
+) or pod2usage(2);
+@configurationFiles = split(/,/, join(',', @configurationFiles));
+
+pod2usage() if $help;
+pod2usage(-verbose => 2) if $man;
+
+# Read main action from @ARGV
+if (@ARGV) {
+	$mainAction = $ARGV[0];
+	if ($mainAction eq 'create-config') {
+		$createExampleConfig = $ARGV[1];
+	}
+}
+# /Read main action from @ARGV
+
+
+# Handle "create-config" action
+if ($mainAction eq 'create-config') {
+	print 'Writing example configuration file to "' . $createExampleConfig . '"...' . "\n";
+	
+	if (-e $createExampleConfig && -f $createExampleConfig && ! -w $createExampleConfig) {
+		print 'Cannot overwrite existing file "' . $createExampleConfig . '"!';
+		exit 73;
+	}
+	my $exampleConfigContainingDir = File::Basename::dirname($createExampleConfig);
+	if (! -e $exampleConfigContainingDir || (-e $exampleConfigContainingDir && -d $exampleConfigContainingDir && ! -w $exampleConfigContainingDir)) {
+		print 'Cannot write to "' . $exampleConfigContainingDir . '"!';
+		exit 73;
+	}
+	
+	open(my $fh, '>', $createExampleConfig) or print 'Could not open file "' . $createExampleConfig . '": ' . $! and exit 74;
+	print $fh <<'EOC';
+# 
+# Backup configuration
+# 
+
+---
+backupedServerName: ServerFooBar             # Friendly name of the server
+workingBasePath:    /datas/backup/workingdir # Temporary local storage base path (used when dumping data)
+debugMessages:      0                        # Set to 0 to ignore debug messages. Set to 1 to enable
+
+Duplicity: # Duplicity parameters
+  binPath: /usr/bin/duplicity          # Duplicity program filepath
+  archiveDir: /datas/backup/archiveDir # The archive directory path (see Duplicity manpage for "--archive-dir")
+#  tmpDir: <string>                     # (Optional) The directory path to use for Duplicity temporary files instead of the system default (see Duplicity manpage for "--tempdir")
+#  logFile: <string>                    # (Optional) File path where to write specially-formatted versions of output messages (see Duplicity manpage for "--log-file")
+#  gpgPassphrase: <string>              # (Optional) Passphrase to pass to GnuPG (see Duplicity manpage for "ENVIRONMENT VARIABLES")
+#  gpgSignPassphrase: <string>          # (Optional) The passphrase to be used for --sign-key (see Duplicity manpage for "ENVIRONMENT VARIABLES")
+#  excludeDirsContaining: <string>      # (Optional) Exclude directories if filename is present. (see Duplicity manpage for "--exclude-if-present")
+#  globalOptions:                       # (Optional) List of options to always pass to Duplicity (see Duplicity manpage)
+#  - --verbosity 8 # "Info" level of verbosity
+
+Services: # Associative array of what to backup
+  # Syntax:
+  # <TYPE>: # Type of the service (possible values: SERVICE_TYPE_*). It's an associative array of one or more Service(s) of that type
+  #   <SERVICE_ID>: # One service of type <TYPE>
+  #     enabled: <integer>                    # Set to 0 so skip this service (= won't be backuped). Set to 1 to enable (= will be backuped)
+  #     type:    <string>                     # Repeat <TYPE> here (I know, not very clean...)
+  #     subdir:  <string>                     # On Storage, subdirectory where to store backuped data, should be unique among Services
+  #     options: <Associative array>          # Service-specific options (IP addresses, credentials, etc.)
+  #     duplicityOptions: <Associative array> # (Optional) Options to pass to Duplicity for this Service only (see Duplicity manpage)
+  #                                           # Note: To use "--exclude" option, prepend with "**" wildcard otherwise it would cause "Fatal Error: The file specification ... cannot match any files in the base directory" (because theses options are used for every path)
+  #
+  # "FileSystem" Service options:
+  #   pathsToBackup: <List>                  # List of path that are to be backuped
+  #
+  # "Mysql" Service options:
+  #   host: <string>                         # Hostname of MySQL server
+  #   port: <integer>                        # Port of MySQL server
+  #   user: <string>                         # User to connect with, usually a backup-only user (with SELECT, SHOW DATABASES, SHOW VIEW and LOCK TABLES privileges)
+  #   password: <string>                     # Password of user
+  #   mysqlclientfilepath: <string>          # Path to mysql client
+  #   mysqldumpfilepath: <string>            # Path to mysqldump
+  #   databasesToBackup: <Associative array> # (Optional) Databases to backup (if option is ommitted, will backup every database).
+  #                                            Contains "Database Name / mysqldump options list" couples.
+  #                                            Given options are passed to mysqldump only when dumping the corresponding database.
+  #   mysqldumpOptions: <List>               # (Optional) Options to pass to mysqldump (global within this Service: used for each database)
+  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
+  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
+  #
+  # "Ldap" Service options:
+  #   slapcatFilepath: <string>              # Path to slapcat
+  #   slapcatConfigFilepath: <string>        # If empty (set to undef), slapcat will use it's default value. see slapcat(8) "-f" option
+  #   dnTreesToBackup: <Associative array>   # (Optional) DN trees to backup (see slapcat(8) "-H" option).
+  #                                            Contains "DN / slapcat options list" couples.
+  #                                            DN Can be of form "ldap:///subtree-dn" and/or "ldap:///???(filter)".
+  #                                            Given options are passed to slapcat only for the corresponding DN tree.
+  #   slapcatOptions: <List>                 # (Optional) Options to pass to slapcat (global within this Service: used for each tree)
+  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
+  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
+  #
+
+  FileSystem: # FS Services
+    localDisk:
+      enabled: 0
+      type:    FileSystem
+      subdir:  theLocalDisk/
+      options:
+        pathsToBackup:
+        - /etc/
+        - /root/
+        - /var/www
+        - /var/lib/redmine
+      duplicityOptions:
+      - --exclude **/root/.secret
+  
+  Mysql: # MySQL Services
+    mysql:
+      enabled: 0
+      type:    Mysql
+      subdir:  mysqlServer/
+      options:
+        host:                  localhost
+        port:                  3306
+        user:                  backup
+        password:              some-secure-password
+        mysqlclientfilepath:   /usr/bin/mysql
+        mysqldumpfilepath:     /usr/bin/mysqldump
+        # No "databasesToBackup" config = backup every available database
+        mysqldumpOptions:
+        - --insert-ignore # I prefer to have INSERT IGNORE statements
+        - --events # Avoids a warning when backuping `mysql.event` table
+        compressMethod:        /bin/gzip -9 # Compress dump using gzip
+        compressFileExtension: .gz # Adapt file extension accordingly
+      duplicityOptions:
+      - --asynchronous-upload
+    mysql-dev:
+      enabled: 0
+      type:    Mysql
+      subdir:  developer-mysql/
+      options:
+        host:                 localhost
+        port:                 3307
+        user:                 backup
+        password:             some-secure-password
+        mysqlclientfilepath:  /usr/bin/mysql
+        mysqldumpfilepath:    /usr/bin/mysqldump
+        databasesToBackup: # Only backup following databases
+          mysql: # No specific option for the "mysql" database
+          webapp:
+          - --single-transaction --quick # "webapp" database mostly contains transactional tables such as InnoDB
+  
+  Ldap: # LDAP Services
+    ldap:
+      enabled: 0
+      type:    Ldap
+      subdir:  ldap-directory/
+      options:
+        slapcatFilepath:       /usr/sbin/slapcat
+        slapcatConfigFilepath:  # Let slapcat use it's default value
+        dnTreesToBackup:
+          dc=example,dc=com:
+          - -c
+          ldap:///dc=example,dc=net: # No specific option
+        slapcatOptions:
+        - -v
+        compressMethod:        /bin/gzip -9
+        compressFileExtension: .gz
+      duplicityOptions:
+      - --no-encryption
+
+Storages: # Associative array of where to store backups
+  # Syntax:
+  # <TYPE>: # Type of the storage (possible values: STORAGE_TYPE_*). It's an associative array of one or more Storage(s) of that type
+  #   <STORAGE_ID>: # One storage of type <TYPE>
+  #     enabled: <integer>             # Set to 0 so skip this storage (= nothing will be stored on it). Set to 1 to enable (= will be used to store backups)
+  #     type:    <string>              # Repeat <TYPE> here (I know, not very clean...)
+  #     options: <Associative array>   # Service-specific options (IP addresses, credentials, etc.)
+  #     duplicity: <Associative array> # Duplicity options
+  #       name: <string>                              # (Optional) Set the symbolic name of the backup being operated on. The intent is to use a separate name for each logically distinct backup. (see Duplicity manpage for "--name")
+  #       fullIfOlder: <time string>                  # (Optional) Perform a full backup if an incremental backup is requested, but the latest full backup in the collection is older than the given time (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #       numberOfFullBackupToKeep: <integer>         # (Optional) Delete all backups sets that are older than the count:th last full backup (in other words, keep the last count full backups and associated incremental sets)
+  #       maximumAgeOfFullBackupToKeep: <time string> # (Optional) Delete all backup sets older than the given time. Old backup sets will not be deleted if backup sets newer than time depend on them. (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #       otherOptions: <List>                        # (Optional) Other options to pass to Duplicity for this Storage only (see Duplicity manpage)
+  #
+  # Common options to all Storage type:
+  #   path: <string> # Relative path where to store backups on storage.
+  #                    Notes:
+  #                      For "Ssh" storages it may be preceded by a single slash, '/path', to represent a relative path to the target home directory, or preceded by a double slash, '//path', to represent an absolute filesystem path (cf. Duplicity manpage).
+  #                      This option supports one (for now) variable: "%=backupedServerName%" will be replaced by whatever is set at "backupedServerName" configuration key
+  #
+  # "FileSystem" Service options:
+  #   pathsToBackup: <List>                  # List of path that are to be backuped
+  #
+  # "Mysql" Service options:
+  #   host: <string>                         # Hostname of MySQL server
+  #   port: <integer>                        # Port of MySQL server
+  #
+
+  FileSystem:
+    usbBackup:
+      enabled: 0
+      type:    FileSystem
+      options:
+        path: /mnt/usbBackupDisk
+      duplicity:
+        name:                     localCopy
+        fullIfOlder:              1M # Full every months
+        numberOfFullBackupToKeep: 1
+        otherOptions:
+        - --no-encryption # Never encrypt anything when backuping here
+  Ftp:
+    ftpBackup:
+      enabled: 0
+      type:    Ftp
+      options:
+        host:     ftp-backup.example.com
+        port:     21
+        user:     backuper
+        password: some-secure-password
+        path:     /backups/%=backupedServerName%
+      duplicity:
+        fullIfOlder:                  7D # Full every 7 days
+        numberOfFullBackupToKeep:     3  # Keep 3 full backups
+        maximumAgeOfFullBackupToKeep: 2M # Avoid keeping full backup sets older than 2 months
+        otherOptions:
+        - --num-retries 2 # Attempt twice
+        - --volsize 200   # Volumes of 200 Mb
+  Ssh:
+    secureArchiveNas:
+      enabled: 0
+      type:    Ssh
+      options:
+        host:     archive.example.com
+        port:     22222
+        user:     root # Ugly: don't use that
+        password: some-secure-password
+        path:     //data/bckups/servers/%=backupedServerName%/ # Absolute path
+      duplicity:
+        fullIfOlder:              7D # Full every 10 days
+        numberOfFullBackupToKeep: 10 # Keep 10 full backups
+        otherOptions:
+        - --volsize 10 # Volumes of 10 Mb
+EOC
+	close $fh;
+	
+	print 'Example configuration file written to "' . $createExampleConfig . '"' . "\n";
+	exit 0;
+}
+# /Handle "create-config" action
+
+if ($mainAction ne 'backup') {
+	print 'Unknown action "' . $mainAction . '"' . "\n";
+	pod2usage(64);
+}
+
+##### /Arguments #####
+
+
+##### Configuration #####
+
+if (!@configurationFiles) {
+	print 'No configuration file specified. Please do so with --config option';
+	exit 64;
+}
+
+
+my $config; # Start with an empty configuration
+foreach (@configurationFiles) {
+	$loadedConfig = YAML::XS::LoadFile($_);
+	$config = merge $config, $loadedConfig; # Merge loaded configuration with existing one
+}
+
+$backupedServerName = $config->{'backupedServerName'};
+
+$workingBasePath = $config->{'workingBasePath'};
+
+my $duplicity = $config->{'Duplicity'};
+
+my $services = $config->{'Services'};
+my $serviceDumpingData = { # Servce <-> "Dumping data flag" mapping
+	&SERVICE_TYPE_FILESYSTEM => 0,
+	&SERVICE_TYPE_LDAP       => 1,
+	&SERVICE_TYPE_MYSQL      => 1,
+};
+
+my $storages = $config->{'Storages'};
+
+# Logger:
+local $Log::Message::Simple::MSG_FH = \*STDOUT;
+local $Log::Message::Simple::ERROR_FH = \*STDOUT;
+local $Log::Message::Simple::DEBUG_FH = \*STDOUT;
+if (defined $config->{'debugMessages'}) {
+	$Log::Message::Simple::log_debug = $config->{'debugMessages'};
+}
+##### /Configuration #####
+
+
+
+##### Functions #####
+
+## Logger ##
+
+sub loggedMsg
+{
+	loggedTextWithLevel ('msg', $_[0]);
+}
+
+sub loggedError
+{
+	loggedTextWithLevel ('error', $_[0]);
+}
+
+sub loggedDebug
+{
+	loggedTextWithLevel ('debug', $_[0]);
+}
+sub loggedTextWithLevel
+{
+	my ($level, $text) = @_;
+	
+	$text = getIso8601DateString() . ' - ' . $text;
+	
+	switch ($level) {
+		case 'error' {
+			Log::Message::Simple::error($text, 1);
+		}
+		case 'debug' {
+			if ($Log::Message::Simple::log_debug) {
+				Log::Message::Simple::debug($text, 1);
+			}
+		}
+		else {
+			Log::Message::Simple::msg($text, 1);
+		}
+	}
+}
+
+## /Logger ##
+
+
+
+## String ##
+
+##
+ # Returns the position of the nth occurance of a specified character within a string (from begining)
+ #
+ # @param string	String to look into
+ # @param string	The character to look for into said string
+ # @param string	This character's n-th occurance we want
+ #
+ # @return integer	Found position, -1 if not found
+ #
+ # @see integer	1 if directory is empty, 0 otherwise
+ ##
+sub find_nth {
+	my ($s,$c,$n) = @_;
+	my $pos = -1;
+	while ($n--) {
+		$pos = index($s,$c,$pos+1);
+		return -1 if $pos == -1;
+	}
+	return $pos;
+}
+
+## /String ##
+
+
+## Date & Time ##
+sub getIso8601DateString
+{
+	my $dt = DateTime->now( time_zone => 'UTC' );
+	return (join ' ', $dt->ymd, $dt->hms, $dt->time_zone->name);
+}
+## /Date & Time  ##
+
+
+## Files ##
+
+##
+ # Tells if a directory is empty or not
+ #
+ # @param string	Path of directory to check
+ #
+ # @return integer	1 if directory is empty, 0 otherwise
+ ##
+sub dirIsEmpty($)
+{
+	my $directory = shift;
+	if (-d $directory) {
+		$findCommand = 'find "' . $directory . '" -type f | wc -l';
+		if (`$findCommand` == 0) { # Directory is empty
+			return 1;
+		}
+		else { # Directory is NOT empty
+			return 0;
+		}
+	}
+	else { # Is NOT a directory
+		return 0;
+	}
+}
+
+##
+ # Find common directory path
+ #
+ # @param string	Directory separator used in given path
+ # @param array		Paths to check for common part
+ #
+ # @return string	Representing that part of the directory tree that is common to all the directories
+ #
+ # @see http://rosettacode.org/wiki/Find_common_directory_path#Perl
+ #
+ # @require List::Util::max()
+ # @require List::Util::reduce()
+ ##
+sub compath
+{
+	my ($sep, @paths, %hash) = @_;
+	# Tokenize and tally subpaths
+	foreach (@paths) {
+		my @tok = split $sep, substr($_,1);
+		++$hash{join $sep, @tok[0..$_]} for (0..$#tok); }
+	# Return max length subpath or null
+	my $max = max values %hash;
+	return '' unless $max == @paths;
+	my @res =  grep {$hash{$_} == $max} keys %hash;
+	return $sep . reduce { length $a > length $b ? $a : $b } @res;
+}
+
+## /Files ##
+
+
+## Backup ##
+
+##
+ # Backup a file/directory by sending it to external storage(s)
+ #
+ # @param hash $service		Infos on service to use
+ # @param string $path		Absolute path of file/directory to backup
+ #
+ # @return integer	1 if backup succeeded on at least one storage, 2 if backup succeeded on every storages, 0 if not a single backup succeeded, -1 on configuration/environment error
+ ##
+sub backupPath
+{
+	my ($service, $path) = @_;
+	
+	loggedDebug '--- backupPath($service, "' . $path . '") ---';
+	
+	my $return = 2;
+	my $failedStorageCount = 0;
+	my $succeededStorageCount = 0;
+	
+	$path = File::Spec->catdir($path); # Clean given path
+	
+	if (! -e $path || ! -r $path) {
+		loggedError 'Path to backup "' . $path . '" either does not exists or is not readable: cannot backup;';
+		
+		$return = -1;
+	}
+	else {
+		while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storagesToUse)) { # For each type of storages
+			while (my ($currentStorageId, $servicesOfCurrentStorage) = each(%$storagesOfCurrentType)) { # For each storage of that type ($currentStorageType)
+				while (my ($currentServiceId, $currentStorageUsageInfos) = each(%$servicesOfCurrentStorage)) { # For each services of that storage ($currentStorageId)
+					if (!scalar keys($currentStorageUsageInfos->{'pathUsed'}) || !exists($currentStorageUsageInfos->{'pathUsed'}->{$path})) { # No path ever used OR $path not in "pathUsed" hash
+						loggedDebug 'Backup of Path "' . $path . '" for Service "' . $currentServiceId . '" not attempted on Storage "' . $currentStorageId . '" (type "' . $currentStorageType . '")';
+						
+						my $backupResult = executeDuplicityPathBackup(
+							$service,
+							$path,
+							$currentStorageId,
+							$storages->{$currentStorageType}->{$currentStorageId}
+						);
+						
+						if ($backupResult >= 1) {
+							++$succeededStorageCount;
+							loggedMsg '[Backup:' . $currentServiceId . '#' . $path . ' -> ' . $currentStorageId . '] OK';
+							$currentStorageUsageInfos->{'pathUsed'}->{$path} = 1; # Note as OK
+						} else {
+							++$failedStorageCount;
+							loggedError '[Backup:' . $currentServiceId . '#' . $path . ' -> ' . $currentStorageId . '] ERROR';
+							$currentStorageUsageInfos->{'pathUsed'}->{$path} = 0; # Note as erroneous
+						}
+					}
+					else {
+						loggedDebug 'Backup of Path "' . $path . '" for Service "' . $currentServiceId . '" was already attempted on Storage "' . $currentStorageId . '" (type "' . $currentStorageType . '"). Result was ' . ($currentStorageUsageInfos->{'pathUsed'}->{$path} ? 'OK' : 'Not OK');
+					}
+				}
+			}
+		}
+		
+		return 2 unless $failedStorageCount > 0; # Every backup succeeded
+		return 1 unless $succeededStorageCount == 0; # At least one backup failed
+		return 0; # Every backup failed
+	}
+}
+
+## /Backup ##
+
+
+## Duplicity ##
+
+##
+ # Perform a backup using Duplicity
+ #
+ # Supports file://, ftp://, ftps://, sftp:// (=scp://, ssh://) schemes for targets
+ #
+ # Service's "subdir" is always appended to storage's configured target.
+ # For no-dump-Service (when type has $serviceDumpingData = 0), given $sourcePath is also appended to storage's configured target.
+ # For other services, the differentiating part between $workingBasePath + Service's "subdir" and $sourcePath is also appended to storage's configured target.
+ #
+ # Examples:
+ # $workingBasePath is set to "/tmp/duplicityWrkdir"
+ # * A Service where $serviceDumpingData = 0 (eg. type "SERVICE_TYPE_FILESYSTEM") asks to backup "/var/www" to Storage "MyRemoteBackup" which path is "/backups"
+ #   Service "subdir" is set to "Websites"
+ #   Final path on Storage will be: "/backups" + "Websites" + "/var/www" (<Storage's path>/<Service's subdir>/<path to backup>): /backups/Websites/var/www
+ # * A Service where $serviceDumpingData = 1 (eg. type "SERVICE_TYPE_LDAP") asks to backup "/tmp/duplicityWrkdir/ldap/example.com" to Storage "MyRemoteBackup" which path is "/backups"
+ #   Service "subdir" is set to "Directory"
+ #   Final path on Storage will be: "/backups" + "Directory" + "ldap/example.com" (<Storage's path>/<Service's subdir>/<differentiating part>): /backups/Directory/ldap/example.com
+ #
+ # @param hash $service				Backuped Service
+ # @param string $sourcePath		Path of a directory to backup (Duplicity cannot backup a file path)
+ # @param string $storageId			Storage ID
+ # @param hash $storage				Infos on Storage to backup to
+ #
+ # @return integer	2 on complete backup success, 1 if backup succeeded and was verified successfully but cleaning failed, 0 on (any) error
+ ##
+sub executeDuplicityPathBackup
+{
+	my ($service, $sourcePath, $storageId, $storage) = @_;
+	
+	loggedDebug '--- executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+	
+	# Computes the Storage subdir path:
+	my $subdirOnStorage; # Will contains the subdir path to use on Storage
+	
+	if (defined $serviceDumpingData->{$service->{'type'}} && int($serviceDumpingData->{$service->{'type'}}) == 1) { # Service dumps it's data
+		# Will compute the part of $sourcePath that differs from $workingBasePath/$service->{'subdir'}
+		# in order to be a unique subdirectory (per database/dn_tree)
+		# avoids "Fatal Error: Backup source directory has changed" from Duplicity
+		my $commonPath = compath('/', @{[
+			$sourcePath,
+			File::Spec->catdir($workingBasePath, $service->{'subdir'})
+		]});
+		
+		my $dumpSubdir = substr $sourcePath, length $commonPath; # Can use substr because both $sourcePath and $commonPath are absolute path
+		
+		loggedDebug 'It is a dumping Service, will append "' . $dumpSubdir . '" as a subdirectory to target URL';
+		$subdirOnStorage = $dumpSubdir; # Append computed subdir when backuping a service that dumps it's data
+	}
+	else { # Service don't dumps it's data
+		loggedDebug 'It is a no dumping Service, will append "' . $sourcePath . '" as a subdirectory to target URL';
+		$subdirOnStorage = $sourcePath; # Append given path otherwise
+	}
+	
+	if (defined $service->{'subdir'}) { # Append Service's subdir (if set)
+		$subdirOnStorage = File::Spec->catdir($service->{'subdir'}, $subdirOnStorage);
+	}
+	# /Computes the Storage subdir path:
+	
+	# Constructs the target URL:
+	@duplicityTargetUrl = getDuplicityStorageUrl($storage, $subdirOnStorage); # [0] stores the URL, [1] potentially stores a list of environment variables
+	
+	my $duplicityCompatibleTargetUrl = @duplicityTargetUrl[0];
+	while (my ($currentEnvKey, $currentEnvVal) = each(@duplicityTargetUrl[1])) # For each returned environment variable
+	{
+		$ENV{$currentEnvKey} = $currentEnvVal;
+	}
+	# /Constructs the target URL
+	
+	
+	# Duplicity options:
+	my @duplicityOptions = getDuplicityOptions(
+		(defined $service->{'duplicityOptions'} ? $service->{'duplicityOptions'} : undef),
+		(defined $storage->{'duplicity'}        ? $storage->{'duplicity'}        : undef)
+	);
+	
+	loggedDebug '[Backup:' . $sourcePath . ' -> ' . $storageId . ']: Duplicity backup will be ran with following options: ' . join ' ', @duplicityOptions;
+	
+	my $backupResult = execDuplicityAction('incremental', \@duplicityOptions, $sourcePath, $duplicityCompatibleTargetUrl);
+	
+	my $return;
+	
+	if ($backupResult->{exitCode} != 0) {
+		loggedError 'An error occurred during backup of "' . $sourcePath . '" to Storage "' . $storageId . '" (exitcode = ' . $backupResult->{exitCode} . ')';
+		loggedError 'STDOUT: ' . $backupResult->{stdout} unless $backupResult->{stdout} eq '';
+		loggedError 'STDERR: ' . $backupResult->{stderr} unless $backupResult->{stderr} eq '';
+		
+		loggedDebug '--- /executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+		$return = 0;
+	}
+	else {
+		#TODO: Find a way to check/validate backup went OK (Duplicity's "verify" action don't do that)
+		loggedMsg 'Backup of "' . $sourcePath . '" to Storage "' . $storageId . '" completed successfully, will proceed with cleaning tasks (if any)';
+		
+		my $cleaningError = 0;
+		
+		# Cleaning
+		if (defined $storage->{'duplicity'}->{'numberOfFullBackupToKeep'} && int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) > 0) {
+			loggedDebug '[Backup:' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) . ' last full backups...';
+			my @duplicityRemoveAllButNFullOptions = @duplicityOptions;
+			push(@duplicityRemoveAllButNFullOptions, '--force');
+			my $removeAllButNFullResult = execDuplicityAction('remove-all-but-n-full ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}), \@duplicityRemoveAllButNFullOptions, undef, $duplicityCompatibleTargetUrl);
+			if ($removeAllButNFullResult->{exitCode} != 0) {
+				loggedError 'An error occurred during removal of ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) . '-th and upper full backups of "' . $sourcePath . '" on Storage "' . $storageId . '".';
+				loggedError 'STDOUT: ' . $removeAllButNFullResult->{stdout} unless $removeAllButNFullResult->{stdout} eq '';
+				loggedError 'STDERR: ' . $removeAllButNFullResult->{stderr} unless $removeAllButNFullResult->{stderr} eq '';
+				$cleaningError = 1;
+			}
+			else {
+				loggedMsg 'Removal of ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) . '-th and upper full backups of "' . $sourcePath . '" done successfully on Storage "' . $storageId . '".';
+			}
+		}
+		if (defined $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} && length $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'}) {
+			loggedDebug '[Backup: ' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only full backup newer than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} . '...';
+			my @duplicityRemoveOlderThanOptions = @duplicityOptions;
+			push(@duplicityRemoveOlderThanOptions, '--force');
+			my $removeOlderThanResult = execDuplicityAction('remove-older-than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'}, \@duplicityRemoveOlderThanOptions, undef, $duplicityCompatibleTargetUrl);
+			if ($removeOlderThanResult->{exitCode} != 0) {
+				loggedError 'An error occurred during removal of full backups of "' . $sourcePath . '" older than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} . ' on Storage "' . $storageId . '."';
+				loggedError 'STDOUT: ' . $removeOlderThanResult->{stdout} unless $removeOlderThanResult->{stdout} eq '';
+				loggedError 'STDERR: ' . $removeOlderThanResult->{stderr} unless $removeOlderThanResult->{stderr} eq '';
+				$cleaningError = 1;
+			}
+			else {
+				loggedMsg 'Removal of full backups of "' . $sourcePath . '" older than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} . ' done successfully on Storage "' . $storageId . '".';
+			}
+		}
+		
+		$return = 2 unless $cleaningError;
+		$return = 1;
+	}
+	
+	# Remove/clean environment variables before returning
+	while (my ($currentEnvKey, $currentEnvVal) = each(@duplicityTargetUrl[1]))
+	{
+		delete $ENV{$currentEnvKey}; 
+	}
+	
+	loggedDebug '--- /executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+	
+	return $return;
+}
+
+##
+ # Determines and return the Storage URL to pass to duplicity.
+ #
+ # Computes options to use from configuration keys Duplicity, storage and service.
+ #
+ # @param hash $storage			Infos on Storage to backup/restore to/from
+ # @param string $subdir		(Optional) Subdirectory of Storage's path where Service's data are to be stored
+ #
+ # @return array The target URL for Duplicity as first array element and a hash of environment variables to use when calling it
+ ##
+sub getDuplicityStorageUrl
+{
+	my ($storage, $subdir) = @_;
+	
+	loggedDebug '--- getDuplicityStorageUrl($storage, "' . $subdir . '") ---';
+	
+	if (!defined $subdir) {
+		$subdir = '';
+	}
+	
+	my %envVariables= ();
+	
+	# Constructs the target URL:
+	my $targetUrl = new URI;
+	
+	if ($storage->{'type'} eq STORAGE_TYPE_FILESYSTEM) {
+		$targetUrl->scheme('file');
+	}
+	elsif ($storage->{'type'} eq STORAGE_TYPE_FTP) {
+		$targetUrl->scheme('ftp');
+	}
+	elsif ($storage->{'type'} eq STORAGE_TYPE_FTPS) {
+		$targetUrl->scheme('ftp');
+	}
+	elsif ($storage->{'type'} eq STORAGE_TYPE_SSH) {
+		$targetUrl->scheme('ssh');
+	}
+	else {
+		loggedError 'Given storage type ("' . $storage->{'type'} . '") is not supported: can\'t continue';
+		return undef;
+	}
+	
+	if ($storage->{'type'} eq STORAGE_TYPE_FILESYSTEM) {
+		$targetUrl->host('localhost');
+	}
+	elsif ($storage->{'type'} eq STORAGE_TYPE_FTP || $storage->{'type'} eq STORAGE_TYPE_FTPS || $storage->{'type'} eq STORAGE_TYPE_SSH) {
+		$targetUrl->user($storage->{'options'}->{'user'});
+#		$targetUrl->password($storage->{'options'}->{'password'}) unless not defined $storage->{'options'}->{'password'}; # Removed: using environment variable "FTP_PASSWORD" instead
+		$envVariables{FTP_PASSWORD} = $storage->{'options'}->{'password'} unless not defined $storage->{'options'}->{'password'};
+		$targetUrl->host($storage->{'options'}->{'host'});
+		if (defined $storage->{'options'}->{'port'}) {
+			$targetUrl->port($storage->{'options'}->{'port'});
+		}
+		else {
+			$targetUrl->port($targetUrl->default_port);
+		}
+	}
+	
+	my $storagePath = $storage->{'options'}->{'path'};
+	$storagePath =~ s/%=backupedServerName%/$config->{'backupedServerName'}/g; # Replaces "%=backupedServerName%" by "backupedServerName" configuration key
+	
+	$targetUrl->path(File::Spec->catdir($storagePath, $subdir)); # Store into a subdir as asked by the Service
+	
+	my $duplicityCompatibleTargetUrl = $targetUrl->as_string;
+	
+	# Fix the target URL to obtain a "file:///" URI that Duplicity accepts (URI Perl modules can do "file://localhost/" but Duplicity don't supports it, so I'm manually fixing it):
+	if ($storage->{'type'} eq STORAGE_TYPE_FILESYSTEM) {
+		if ((substr $duplicityCompatibleTargetUrl, 0, 17) eq 'file://localhost/') { # Double check URI indeed starts with "file://localhost/"
+			$duplicityCompatibleTargetUrl = 'file://' . (substr $duplicityCompatibleTargetUrl, 16); # Remove the "localhost/"
+		}
+	}
+	# Fix the target URL to obtain a "ssh://" URI where path is an absolute one (eg. ssh://user[:password]@other.host[:port]//some_dir) (URI Perl modules cannot do path starting with "//", so I'm manually fixing it):
+	elsif ($storage->{'type'} eq STORAGE_TYPE_SSH && (substr $storage->{'options'}->{'path'}, 0, 2) eq '//') {
+		my $pathPartStartingPosition = find_nth($duplicityCompatibleTargetUrl, '/', 3); # Position where path-part start
+		if (substr($duplicityCompatibleTargetUrl, $pathPartStartingPosition, 2) ne '//') { # If path doesn't starts with "//" even though $storage->{'options'}->{'path'} does
+			$duplicityCompatibleTargetUrl = substr($duplicityCompatibleTargetUrl, 0, $pathPartStartingPosition) . '/' . substr($duplicityCompatibleTargetUrl, $pathPartStartingPosition); # Add the missing / (combine pre-path-part and path-part together around a nice '/')
+		}
+	}
+	# /Constructs the target URL
+	
+	loggedDebug '--- /getDuplicityStorageUrl($storage, "' . $subdir . '") ---';
+	
+	return ($duplicityCompatibleTargetUrl, \%envVariables);
+}
+
+##
+ # Determines and return the options to pass to duplicity.
+ #
+ # Computes options to use from configuration keys Duplicity, storage and service.
+ #
+ # @param array $serviceOptions	(Optional) Duplicity options asked by service
+ # @param array $storageOptions	(Optional) Storage (to backup to) duplicity options
+ #
+ # @return array The options
+ ##
+sub getDuplicityOptions
+{
+	my ($serviceOptions, $storageOptions) = @_;
+	
+	loggedDebug '--- getDuplicityOptions($serviceOptions, $storageOptions) ---';
+	
+	loggedDebug 'Options sources:';
+	loggedDebug '  Global: ' .  join ' ', @{ $duplicity->{'globalOptions'} };
+	loggedDebug '  Service: ' . join ' ', @{ $serviceOptions };
+	loggedDebug '  Storage: ' . join ' ', keys($storageOptions);
+	
+	my @duplicityOptions = ();
+	
+	# Global options:
+	if (defined $duplicity->{'archiveDir'} && -d $duplicity->{'archiveDir'} && -w $duplicity->{'archiveDir'}) {
+		push(@duplicityOptions, '--archive-dir "' . $duplicity->{'archiveDir'} . '"');
+	}
+	else {
+		my $fatalError = 'Duplicity archive directory error: Either "Duplicity/archiveDir" configuration key is missing, or there is no directory at "' . $duplicity->{'archiveDir'} . '" or it\'s not a writeable dir. Please fix "Duplicity/archiveDir" configuration key.';
+		loggedError $fatalError;
+		die $fatalError;
+	}
+	
+	if (defined $duplicity->{'tmpDir'}) {
+		if (-d $duplicity->{'tmpDir'} && -w $duplicity->{'tmpDir'}) {
+			push(@duplicityOptions, '--tempdir "' . $duplicity->{'tmpDir'} . '"');
+		}
+		else {
+			my $fatalError = 'Duplicity duplicity temporary files dir error: Either there is no directory at "' . $duplicity->{'tmpDir'} . '" or it\'s not a writeable dir. Please fix "Duplicity/tmpDir" configuration key.';
+			loggedError $fatalError;
+			die $fatalError;
+		}
+	}
+	
+	if (defined $duplicity->{'logFile'}) {
+		if (
+			(-e $duplicity->{'logFile'} && ! -d $duplicity->{'logFile'} && -w $duplicity->{'logFile'}) # Exists, not a directory and is writeable
+			|| (-d File::Basename::dirname($duplicity->{'logFile'}) && -w File::Basename::dirname($duplicity->{'logFile'})) # OR dirname exists and is writeable
+		) {
+			push(@duplicityOptions, '--log-file "' . $duplicity->{'logFile'} . '"');
+		}
+		else {
+			my $fatalError = 'Duplicity duplicity log file error: Either "' . $duplicity->{'logFile'} . '" is a directory or can\'t create a file there or it exists but can\'t write to it. Please fix "Duplicity/logFile" configuration key.';
+			loggedError $fatalError;
+			die $fatalError;
+		}
+	}
+	
+	if (defined $duplicity->{'excludeDirsContaining'}) {
+		push(@duplicityOptions, '--exclude-if-present "' . $duplicity->{'excludeDirsContaining'} . '"');
+	}
+	
+	
+	
+	if (defined $duplicity->{'globalOptions'}) {
+		foreach (@{ $duplicity->{'globalOptions'} }) {
+			push(@duplicityOptions, $_);
+		}
+	}
+	# /Global options
+	
+	# Adds option from Service:
+	if (defined $serviceOptions) {
+		foreach (@{ $serviceOptions }) {
+			push(@duplicityOptions, $_);
+		}
+	}
+	
+	# Adds options from Storage:
+	if (defined $storageOptions) {
+		if (defined $storageOptions->{'name'}) {
+			push(@duplicityOptions, '--name "' . $storageOptions->{'name'} . '"');
+		}
+		
+		if (defined $storageOptions->{'fullIfOlder'}) {
+			push(@duplicityOptions, '--full-if-older-than ' . $storageOptions->{'fullIfOlder'});
+		}
+		
+		if (defined $storageOptions->{'otherOptions'}) {
+			foreach (@{ $storageOptions->{'otherOptions'} }) {
+				push(@duplicityOptions, $_);
+			}
+		}
+	}
+	
+	loggedDebug '--- /getDuplicityOptions($serviceOptions, $storageOptions) ---';
+	
+	return @duplicityOptions;
+}
+
+##
+ # Actually calls Duplicity.
+ #
+ # @param string $action	Duplicity action (full, incr, remove-all-but-n-full, etc)
+ # @param array $options	(Optional) Duplicity options
+ # @param string $source	(Optional) Duplicity source path or URL
+ # @param string $target	Duplicity target path or URL
+ #
+ # @return hash Contains exit code, stdout and stderr
+ ##
+sub execDuplicityAction
+{
+	my ($action, $options, $source, $target) = @_;
+	
+	loggedDebug '--- execDuplicity("' . $action . '", $options, "' . $source . '", "' . $target . '") ---';
+	
+	## Parameters
+	if (!defined $options) {
+		loggedDebug 'No $options';
+		$options = ();
+	}
+	
+	my $source_withQuotes = '';
+	my $target_withQuotes = '';
+	if (defined $source) {
+		$source_withQuotes = '"' . $source . '"';
+	}
+	if (defined $target) {
+		$target_withQuotes = '"' . $target . '"';
+	}
+	## /Parameters
+	
+	if (! defined $duplicity->{'binPath'}) {
+		my $fatalError = 'Duplicity program location not specified in "Duplicity/binPath" configuration key. Please do so (add the missing key).';
+		loggedError $fatalError;
+		die $fatalError;
+	}
+	
+	if ( ! -e $duplicity->{'binPath'} || -d $duplicity->{'binPath'} || ! -x $duplicity->{'binPath'} ) {
+		my $fatalError = 'Duplicity program location error: Either there is no file at "' . $duplicity->{'binPath'} . '" or it\'s not an executable file. Please fix "Duplicity/binPath" configuration key.';
+		loggedError $fatalError;
+		die $fatalError;
+	}
+	
+	# Concatenate binary, action, options, source and target into final command line:
+	my @duplicityCmd = ($duplicity->{'binPath'}, $action, @{ $options }, $source_withQuotes, $target_withQuotes);
+	
+	# Create a string version:
+	my $commandString = join ' ', @duplicityCmd;
+	
+	if (defined  $duplicity->{'gpgPassphrase'}) {
+		$ENV{PASSPHRASE} =  $duplicity->{'gpgPassphrase'};
+		loggedDebug 'GPG passphrase added into "PASSPHRASE" environment variable';
+	}
+	if (defined  $duplicity->{'gpgSignPassphrase'}) {
+		$ENV{SIGN_PASSPHRASE} =  $duplicity->{'gpgSignPassphrase'};
+		loggedDebug 'GPG signature passphrase added into "SIGN_PASSPHRASE" environment variable';
+	}
+	
+	
+	loggedDebug 'Duplicity backup will be ran with following command line:';
+	loggedDebug $commandString;
+	
+#	run \@duplicityCmd, \$stdin, \$stdout, \$stderr; # or die 'Duplicity "' . $action . '" failed on ' . $source . $target . ' with exit code ' . $?; # IPC::Run variant (not working: can't capture STDOUT and STDERR)
+	
+	my ($stdout, $stderr, $exitCode) = capture {
+		system( $commandString );
+	};
+	
+	my %actionResult;
+	$actionResult{exitCode} = $exitCode / 256;
+	$actionResult{stdout} = $stdout;
+	$actionResult{stderr} = $stderr;
+	
+	loggedDebug '$actionResult{exitCode} = ' . $actionResult{exitCode};
+	loggedDebug '$actionResult{stdout} = ';
+	loggedDebug $actionResult{stdout};
+	loggedDebug '$actionResult{stderr} = ';
+	loggedDebug $actionResult{stderr};
+	
+	loggedDebug '--- /execDuplicity("' . $action . '", $options, "' . $source . '", "' . $target . '") ---';
+	
+	return \%actionResult;
+}
+
+##
+ # Get the list of storage URL
+ #
+ # @return hash URLs indexed by Storage's ID
+ ##
+sub getStoragesUrl
+{
+	my %urls;
+	while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storagesToUse)) { # For each type of storages
+		while (my ($currentStorageId, $servicesOfCurrentStorage) = each(%$storagesOfCurrentType)) { # For each storage of that type ($currentStorageType)
+			$urls{$currentStorageId} = (getDuplicityStorageUrl($storages->{$currentStorageType}->{$currentStorageId}))[0];
+		}
+	}
+	return \%urls;
+}
+
+## /Duplicity ##
+
+
+## Service runs ##
+
+sub runBackupX
+{
+	my ($serviceType, $serviceTypeFriendlyName, $subName) = @_;
+	
+	loggedMsg '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", "' . $subName . '") ---';
+	
+	loggedDebug 'Will proceed with services of type "' . $serviceType . '" (' . scalar(keys %{$services->{$serviceType}}) . ' service(s) in configuration)...';
+	while (my ($currentServiceId, $currentServiceInfos) = each (%{$services->{$serviceType}})) { # For each services of type $serviceType
+		loggedDebug "\t" . 'Iterating on Service "' . $currentServiceId . '" (enabled = ' . $currentServiceInfos->{'enabled'} . '; subdir = "' . $currentServiceInfos->{'subdir'} . '")';
+		
+		if ($currentServiceInfos->{'enabled'} == 1) {
+			#TODO: Support pre-service-run hooks (run any command(s) listed in configuration file)
+			loggedMsg '--------------------------------------------------------------------------------';
+			loggedMsg '- Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '"';
+			loggedMsg '----------';
+			$serviceRuns->{$serviceType}{$currentServiceId}{'result'} = $subName->($currentServiceInfos);
+			$serviceRuns->{$serviceType}{$currentServiceId}{'ran'} = 1;
+			loggedMsg '';
+			if ($serviceRuns->{$serviceType}{$currentServiceId}{'result'} == 1) {
+				loggedMsg 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '" => OK';
+				#TODO: Support success-service-run hooks (run any command(s) listed in configuration file)
+				$noBackupErrors = 1 unless defined $noBackupErrors;
+			}
+			else {
+				loggedError 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '" => ERROR';
+				$noBackupErrors = 0;
+				#TODO: Support fail-service-run hooks (run any command(s) listed in configuration file)
+			}
+			loggedMsg '--------------------------------------------------------------------------------';
+			
+			
+			print "\n";
+			loggedMsg '';
+			print "\n";
+			
+			#TODO: Support post-service-run hooks (run any command(s) listed in configuration file)
+		}
+		else {
+			loggedDebug "\t" . 'Service "' . $currentServiceId . '" is disabled: skipping';
+		}
+	}
+	
+	loggedMsg '--- /runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", "' . $subName . '") ---';
+}
+
+## /Service runs ##
+
+
+## Service: File System ##
+
+##
+ # Backup FS files
+ #
+ # @param hash $service	Infos on FS service to backup
+ #
+ # @return integer	1 on success, 0 on (any) error
+ ##
+sub backupFs
+{
+	my $service = $_[0];
+	
+	loggedDebug '--- backupFs($service) ---';
+	
+	if ($service->{'type'} ne SERVICE_TYPE_FILESYSTEM) {
+		loggedError 'Given service is not of expected "' . SERVICE_TYPE_FILESYSTEM . '" type (is "' . $service->{'type'} . '"): can\'t continue';
+		return 0;
+	}
+	
+	my $noBackupError = 1;
+	
+	loggedDebug 'List of path to backup';
+	foreach (@{ $service->{'options'}{'pathsToBackup'} }) { # For each path to backup #TODO: Move to a "pathsToBackup" hash (instead of an array) allowing to pass specific duplicity options for this path (as in MySQL and LDAP services)
+		if ($_ ne '') {
+			if (backupPath($service, $_) == 0) { # backupPath() failed to backup
+				$noBackupError = 0;
+			}
+		}
+	}
+	
+	loggedDebug '--- /backupFs($service) ---';
+	
+	return $noBackupError;
+}
+## /Service: File System ##
+
+
+## Service: LDAP ##
+
+##
+ # Backup a LDAP server by dumping it's tree
+ #
+ # @param hash $service	Infos on FS service to backup
+ #
+ # @return integer	1 on success, 0 on (any) error
+ ##
+sub backupLdap
+{
+	my $service = $_[0];
+	
+	loggedDebug '--- backupLdap($service) ---';
+	
+	if ($service->{'type'} ne SERVICE_TYPE_LDAP) {
+		loggedError 'Given service is not of expected "' . SERVICE_TYPE_LDAP . '" type (is "' . $service->{'type'} . '"): can\'t continue';
+		return 0;
+	}
+	
+	# Looping on "dnTreesToBackup" #
+	my $noBackupError = 1;
+	while (my ($currentDnTree, $currentDnTreeOptionList) = each (%{$service->{'options'}{'dnTreesToBackup'}})) {
+		loggedDebug 'Will dump DN "' . $currentDnTree . '" with options ' . (join ' ', @{ $currentDnTreeOptionList });
+		my $currentDumpFilepath = service_ldap_dumpDnTree($service, $currentDnTree, $currentDnTreeOptionList);
+		loggedDebug 'Dumping of DN "' . $currentDnTree . '" finished';
+		
+		if (defined $currentDumpFilepath) {
+			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
+			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
+			if (backupPath($service, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+				loggedError 'Error occured when backuping LDAP Tree dump "' . $currentDumpFilepathContainingDir . '"';
+				$noBackupError = 0;
+			}
+			else {
+				loggedDebug 'Backup of LDAP Tree dump "' . $currentDumpFilepathContainingDir . '" went OK';
+				unlink $currentDumpFilepath;
+				rmdir $currentDumpFilepathContainingDir;
+			}
+		}
+		else {
+			loggedError 'Error occured when dumping LDAP "' . $currentDnTree . '" : service_ldap_dumpDnTree() returned "undef"';
+		}
+	}
+	# /Looping on "dnTreesToBackup" #
+	
+	loggedDebug '--- /backupLdap($service) ---';
+	
+	return $noBackupError;
+}
+
+##
+ # Dump and compress a DN tree into a LDIF file
+ #
+ # @param hash $service				Infos on LDAP service to backup
+ # @param string $dnTree			DN of tree to dump
+ # @param array $treeSlapcatOptions	(Optional) slapcat options to use for this tree
+ #
+ # @return string Absolute path of the tree dump, undef if dump process failed
+ ##
+sub service_ldap_dumpDnTree
+{
+	my ($service, $dnTree, $treeSlapcatOptions) = @_;
+	
+	loggedDebug '--- service_ldap_dumpDnTree($service, "' . $dnTree . '", $treeSlapcatOptions) ---';
+	
+	# Create the service workingPath:
+	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $dnTree);
+	make_path($pathWhereToDump);
+	
+	# Computes the file name :
+	my $dumpFileName = $dnTree . '.ldif';
+	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
+		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
+	}
+	my $dumpFilePath = File::Spec->catfile($pathWhereToDump, $dumpFileName);
+	
+	# Default slapcat options
+	my @finalDumperOptions = (
+	);
+	
+	# slapcat options for this tree:
+	if (defined $treeSlapcatOptions) {
+		foreach ( @{ $treeSlapcatOptions } ) {
+			push(@finalDumperOptions, $_);
+		}
+	}
+	
+	# slapcat options for this service:
+	if (defined $service->{'options'}{'slapcatOptions'}) {
+		foreach (@{ $service->{'options'}{'slapcatOptions'} }) {
+			push(@finalDumperOptions, $_);
+		}
+	}
+	
+	loggedMsg 'Dumping "' . $dnTree . '" tree into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
+	
+	# Dump compression command
+	my $compressCommand = '';
+	if (defined $service->{'options'}{'compressMethod'}) { # Compression method specified?
+		$compressCommand = ' | ' . $service->{'options'}{'compressMethod'};
+	}
+	
+	# Execute dump and (possible) compression command:
+	my ($stdout, $stderr, $exitCode) = capture {
+		system($service->{'options'}{'slapcatFilepath'} 
+				. ' ' . (join ' ', @finalDumperOptions)
+				. ' -H "' . $dnTree . '"'
+			. $compressCommand
+			. ' > "' . $dumpFilePath . '"');
+	};
+	
+	if ($stderr ne '') {
+		loggedError 'An error occurred when running slapcat of "' . $dnTree . '" to file "' . $dumpFilePath . '" (exitcode = ' . $exitCode / 256 . ')';
+		loggedError 'STDOUT: ' . $stdout unless $stdout eq '';
+		loggedError 'STDERR: ' . $stderr unless $stderr eq '';
+		$dumpFilePath = undef;
+	}
+	
+	loggedDebug '--- /service_ldap_dumpDnTree($service, "' . $dnTree . '", $treeSlapcatOptions) ---';
+	
+	return $dumpFilePath;
+}
+
+## /Service: LDAP ##
+
+
+## Service: MySQL ##
+
+##
+ # Backup a MySQL server by dumping it's databases
+ #
+ # @param hash $service	Infos on MySQL service to backup
+ #
+ # @return integer	1 on success, 0 on (any) error
+ ##
+sub backupMysql
+{
+	my $service = $_[0];
+	
+	loggedDebug '--- backupMysql($service) ---';
+	
+	if ($service->{'type'} ne SERVICE_TYPE_MYSQL) {
+		loggedError 'Given service is not of expected "' . SERVICE_TYPE_MYSQL . '" type (is "' . $service->{'type'} . '"): can\'t continue';
+		return 0;
+	}
+	
+	my @databasesToDump = (); # Will contains couples of the name of each database to dump and the mysqldump options to use for it
+	
+	# Populate @databasesToDump with stuff from config
+	if (defined $service->{'options'}{'databasesToBackup'}) { # Database list to backup is given
+		while (my ($currentDatabaseName, $currentDatabaseOptionList) = each (%{$service->{'options'}{'databasesToBackup'}})) {
+			push(@databasesToDump, [$currentDatabaseName, $currentDatabaseOptionList]) unless $currentDatabaseName eq ''
+		}
+	}
+	else { # Backup every database
+		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --host="' . $service->{'options'}{'host'} . '" --port=' . $service->{'options'}{'port'} . ' --user="' . $service->{'options'}{'user'} . '" --password="' . $service->{'options'}{'password'} . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
+		while (<FH>) {
+			push(@databasesToDump, [(substr $_, 0, -1), []]);
+		}
+		close FH;
+	}
+	
+	# Looping on populated @databasesToDump #
+	my $noBackupError = 1;
+	foreach (@databasesToDump) {
+		loggedDebug 'Will dump database "' . $_->[0] . '" with options ' . (join ' ', @{ $_->[1] });
+		my $currentDumpFilepath = service_mysql_dumpDatabase($service, $_->[0], $_->[1]);
+		loggedDebug 'Dumping of database "' . $_->[0] . '" finished';
+		
+		if (defined $currentDumpFilepath) {
+			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
+			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
+			if (backupPath($service, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+				loggedError 'Error occured when backuping MySQL dump "' . $currentDumpFilepathContainingDir . '"';
+				$noBackupError = 0;
+			}
+			else {
+				loggedDebug 'Backup of MySQL dump "' . $currentDumpFilepathContainingDir . '" went OK';
+				unlink $currentDumpFilepath;
+				rmdir $currentDumpFilepathContainingDir;
+			}
+		}
+		else {
+			loggedError 'Error occured when dumping database "' . $_->[0] . '" : service_mysql_dumpDatabase() returned "undef"';
+		}
+	}
+	# /Looping on populated @databasesToDump #
+	
+	loggedDebug '--- /backupMysql($service) ---';
+	
+	return $noBackupError;
+}
+
+##
+ # Dump and compress a MySQL database
+ #
+ # @param hash $service						Infos on MySQL service to use
+ # @param string $databaseName				Name of database to dump
+ # @param array $databaseMysqldumpOptions	(Optional) mysqldump options to use for this database
+ #
+ # @return string Absolute path of the database dump, undef if dump process failed
+ ##
+sub service_mysql_dumpDatabase
+{
+	my ($service, $databaseName, $databaseMysqldumpOptions) = @_;
+	
+	loggedDebug '--- service_mysql_dumpDatabase($service, "' . $databaseName . '", $databaseMysqldumpOptions) ---';
+	
+	# Create the service workingPath:
+	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $databaseName);
+	make_path($pathWhereToDump);
+	
+	# Computes the file name :
+	my $dumpFileName = $databaseName . '.sql';
+	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
+		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
+	}
+	my $dumpFilePath = File::Spec->catfile($pathWhereToDump, $dumpFileName);
+	
+	# Default mysqldump options
+	my @finalDumperOptions = (
+		'--comments',
+		'--dump-date',
+		'--allow-keywords',
+		'--compress',
+		'--opt',
+		'--no-autocommit',
+	);
+	
+	# mysqldump options for this database:
+	if (defined $databaseMysqldumpOptions) {
+		foreach ( @{ $databaseMysqldumpOptions } ) {
+			push(@finalDumperOptions, $_);
+		}
+	}
+	
+	# mysqldump options for this service:
+	if (defined $service->{'options'}{'mysqldumpOptions'}) {
+		foreach (@{ $service->{'options'}{'mysqldumpOptions'} }) {
+			push(@finalDumperOptions, $_);
+		}
+	}
+	
+	loggedMsg 'Dumping "' . $databaseName . '" database into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
+	
+	# Dump compression command
+	my $compressCommand = '';
+	if (defined $service->{'options'}{'compressMethod'}) { # Compression method specified?
+		$compressCommand = ' | ' . $service->{'options'}{'compressMethod'};
+	}
+	
+	# Execute dump and (possible) compression command:
+	my ($stdout, $stderr, $exitCode) = capture {
+		system($service->{'options'}{'mysqldumpfilepath'}
+				. ' --host=' . $service->{'options'}{'host'} . ' --port=' . $service->{'options'}{'port'} . ' --user=' . $service->{'options'}{'user'} . ' --password=' . $service->{'options'}{'password'}
+				. ' ' . (join ' ', @finalDumperOptions)
+				. ' --databases ' . $databaseName
+			. ' | sed \'1 i\-- \\
+-- Some dump-restoration useful settings:\\
+-- \\
+SET SQL_LOG_BIN=0; \\
+\\
+\''
+			. $compressCommand
+			. ' > "' . $dumpFilePath . '"');
+	};
+	
+	if ($stderr ne '') {
+		loggedError 'An error occurred when running mysqldump of "' . $databaseName . '" to file "' . $dumpFilePath . '" (exitcode = ' . $exitCode / 256 . ')';
+		loggedError 'STDOUT: ' . $stdout unless $stdout eq '';
+		loggedError 'STDERR: ' . $stderr unless $stderr eq '';
+		$dumpFilePath = undef;
+	}
+	
+	loggedDebug '--- /service_mysql_dumpDatabase($service, "' . $databaseName . '", $databaseMysqldumpOptions) ---';
+	return $dumpFilePath;
+}
+
+## /Service: MySQL ##
+
+##### /Functions #####
+
+
+
+##### Process #####
+
+# Prepare statuses of each service
+my %serviceRuns = ();
+while (my ($currentServiceType, $servicesOfCurrentType) = each(%$services)) { # For each type of services
+	$serviceRuns->{$currentServiceType} = ();
+	while (my ($currentServiceId, $currentServiceInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
+		if ($currentServiceInfos->{'enabled'} == 1) { # If service is enabled
+			$serviceRuns->{$currentServiceType}{$currentServiceId} = { # Mark it as:
+				ran    => 0,		# Not run (yet)
+				result => undef,	# Unknown result (yet)
+			};
+		}
+	}
+	if (! defined $serviceRuns->{$currentServiceType}) { # If no services were added for that type ($currentServiceType)
+		delete $serviceRuns->{$currentServiceType}; # Remove (because it's useless)
+	}
+}
+# /Prepare statuses of each service
+
+
+# Prepare statuses of each storage
+my %storagesToUse = ();
+while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storages)) { # For each type of storages
+	$storagesToUse->{$currentStorageType} = ();
+	while (my ($currentStorageId, $currentStorageInfos) = each(%$storagesOfCurrentType)) { # For each storages of that type ($storagesOfCurrentType)
+		if ($currentStorageInfos->{'enabled'} == 1) { # If storage is enabled
+			while (my ($currentServiceType, $servicesOfCurrentType) = each(%$serviceRuns)) { # For each type of services to run
+				while (my ($currentServiceId, $currentServiceInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
+					$storagesToUse->{$currentStorageType}{$currentStorageId}{$currentServiceId} = { # Mark current storage-service pair as:
+						pathUsed => {}, # No path used (yet)
+					};
+				}
+			}
+		}
+	}
+	if (! defined $storagesToUse->{$currentStorageType}) { # If no storages were added for that type ($currentStorageType)
+		delete $storagesToUse->{$currentStorageType}; # Remove (because it's useless)
+	}
+}
+# /Prepare statuses of each storage
+
+
+
+# Start of script
+my $dt = DateTime->now( time_zone => 'UTC' );
+$text = '' . (join ' ', $dt->ymd, $dt->hms, $dt->time_zone->name) . ' - ' . $text;
+
+
+my $actionStartTime = getIso8601DateString();
+loggedMsg 'Backup script for server "' . $config->{'backupedServerName'} . '" started on ' . $actionStartTime;
+
+
+# Test if there is any service or storage enabled
+if(keys($serviceRuns) == 0) {
+	loggedError 'Nothing to backup. Make sure "Services" configuration contains at least one enabled service';
+	exit 78;
+}
+if(keys($storagesToUse) == 0) {
+	loggedError 'Nowhere to backup to. Make sure "Storages" configuration contains at least one enabled storage.';
+	exit 78;
+}
+# /Test if there is any service or storage enabled
+
+
+
+print "\n";
+loggedMsg 'Will backup ' . keys($serviceRuns) . ' service(s) data on ' . keys($storagesToUse) . ' storages:';
+my $storagesUrl = getStoragesUrl();
+while (my ($currentStorageId, $currentStorageUrl) = each($storagesUrl)) {
+	loggedDebug 'Storage "' . $currentStorageId . '" to location: ' . $currentStorageUrl;
+}
+
+
+$currentBackupRunWorkingPath = $workingBasePath;
+
+if (-d $currentBackupRunWorkingPath && ! -w $currentBackupRunWorkingPath) {
+	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not writeable, cannot continue. Please fix permissions.';
+	exit 77;
+}
+if (-d $currentBackupRunWorkingPath && !dirIsEmpty($currentBackupRunWorkingPath)) {
+	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not empty (contains files of previously failed backup?), cannot continue. Please clean directory.';
+	exit 74;
+}
+if (-d $currentBackupRunWorkingPath && int(substr((sprintf '%o', getmod($currentBackupRunWorkingPath)), -1)) != 0) {
+	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is world-readable which is not safe considering data are to be stored there, cannot continue. Please fix permissions.';
+	exit 77;
+}
+make_path($currentBackupRunWorkingPath, {
+	mode => 0700,
+});
+
+
+
+my $noBackupErrors = undef;
+
+# Backup FS
+runBackupX(SERVICE_TYPE_FILESYSTEM, 'File System', \&backupFs);
+
+# Backup LDAP
+runBackupX(SERVICE_TYPE_LDAP, 'LDAP', \&backupLdap);
+
+# Backup MySQL
+runBackupX(SERVICE_TYPE_MYSQL, 'MySQL', \&backupMysql);
+
+
+
+# Cleaning
+if ($noBackupErrors == 1 || !defined $noBackupErrors) { # If no errors OR if nothing ran (!defined $noBackupErrors)
+	# Remove $currentBackupRunWorkingPath directory
+	loggedMsg '--------------------------------------------------------------------------------';
+	loggedMsg '- Deleting temporary working path ("' . $currentBackupRunWorkingPath . '")';
+	loggedMsg '----------';
+	
+	remove_tree($currentBackupRunWorkingPath, {keep_root => 1}); #TODO: Test if dir is really empty instead of relying on $noBackupErrors?
+	
+	if ($? == 0) {
+		loggedMsg '=> OK';
+	}
+	else {
+		loggedError '=> NOK';
+	}
+	loggedMsg '--------------------------------------------------------------------------------';
+}
+elsif ($noBackupErrors == 0 || !dirIsEmpty($currentBackupRunWorkingPath)) { # Error occured
+	loggedError 'There are still files in working path ("' . $currentBackupRunWorkingPath . '"): At least one backup went bad, no cleaning will be performed.';
+	while (my ($currentServiceType, $servicesOfCurrentType) = each(%$serviceRuns)) { # For each type of services
+		while (my ($currentServiceId, $currentServiceRunInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
+			loggedDebug 'Service "' . $currentServiceId . '" (type "' . $currentServiceType . '") ' . ($currentServiceRunInfos->{'ran'} == 1 ? 'ran: ' . (defined $currentServiceRunInfos->{'result'} && $currentServiceRunInfos->{'result'} == 1 ? 'OK' : 'NOT OK') : 'not ran'); 
+		}
+	}
+	#TODO: Write log file in $currentBackupRunWorkingPath
+}
+# /Cleaning
+
+
+print "\n";
+print "\n";
+
+# End of script
+my $actionEndTime = getIso8601DateString();
+$actionDuration = Date::Parse::str2time($actionEndTime) -  Date::Parse::str2time($actionStartTime);
+
+loggedMsg 'Backup script for server "' . $config->{'backupedServerName'} . '" ended on ' . $actionEndTime . ' (' . $actionDuration . ' seconds)';
+
+__END__
+
+=head1 NAME
+
+duplicityBackup - Backups data of file system and various services using duplicity
+
+=head1 SYNOPSIS
+
+duplicityBackup [options] [action]
+
+ Options:
+   --help
+   --man
+   --debug
+   --verbose
+   --config <file>
+
+ Actions:
+   backup
+   create-config <file>
+   list-storages-locations
+   list-files <location>
+
+=head1 ACTIONS
+
+=over 8
+
+=item B<backup>
+
+Perform the backup as describe in configuration file(s) (default action).
+
+=item B<create-config> F<file>
+
+Write a configuration example to F<file> and quits.
+
+=item B<list-storages-locations>
+
+List every activated storage locations (useful when directly using duplicity). B<(Not implemented)>
+
+=item B<list-files> F<location>
+
+List files backuped on a given storage location F<location>. B<(Not implemented)>
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--help>
+
+Print a brief help message and exits.
+
+=item B<--man>
+
+Prints this manual page and exits.
+
+=item B<--debug>
+
+Run script in debug mode.
+
+=item B<--verbose>
+
+Be more verbose. Use multiple times to increment verbosity level. B<(Not implemented)>
+
+=item B<--config> F<file>
+
+Configuration file to use. Use multiple times to combine multiple configuration files
+
+=back
+
+=head1 DESCRIPTION
+
+B<duplicityBackup> will parse the given configuration files and run duplicity 
+to backup designed path and services to specified storages locations
+
+=cut
