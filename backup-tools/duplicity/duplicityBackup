@@ -5,7 +5,7 @@
 #
 # Backups data of file system and various services via Duplicity
 #
-# @version 0.1
+# @version 0.1.1
 #
 # @requires duplicity (Encrypted backup using rsync algorithm)
 #                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
@@ -136,14 +136,13 @@ Duplicity: # Duplicity parameters
 
 Services: # Associative array of what to backup
   # Syntax:
-  # <TYPE>: # Type of the service (possible values: SERVICE_TYPE_*). It's an associative array of one or more Service(s) of that type
-  #   <SERVICE_ID>: # One service of type <TYPE>
-  #     enabled: <integer>                    # Set to 0 so skip this service (= won't be backuped). Set to 1 to enable (= will be backuped)
-  #     type:    <string>                     # Repeat <TYPE> here (I know, not very clean...)
-  #     subdir:  <string>                     # On Storage, subdirectory where to store backuped data, should be unique among Services
-  #     options: <Associative array>          # Service-specific options (IP addresses, credentials, etc.)
-  #     duplicityOptions: <Associative array> # (Optional) Options to pass to Duplicity for this Service only (see Duplicity manpage)
-  #                                           # Note: To use "--exclude" option, prepend with "**" wildcard otherwise it would cause "Fatal Error: The file specification ... cannot match any files in the base directory" (because theses options are used for every path)
+  # <string>: # A Service, id-ed by a unique string (see examples below)
+  #   enabled: <integer>                    # Set to 0 so skip this service (= won't be backuped). Set to 1 to enable (= will be backuped)
+  #   type:    <string>                     # Type of the service (possible values: SERVICE_TYPE_*)
+  #   subdir:  <string>                     # On Storage, subdirectory where to store backuped data, should be unique among Services
+  #   options: <Associative array>          # Service-specific options (IP addresses, credentials, etc.)
+  #   duplicityOptions: <Associative array> # (Optional) Options to pass to Duplicity for this Service only (see Duplicity manpage)
+  #                                         # Note: To use "--exclude" option, prepend with "**" wildcard otherwise it would cause "Fatal Error: The file specification ... cannot match any files in the base directory" (because theses options are used for every path)
   #
   # "FileSystem" Service options:
   #   pathsToBackup: <List>                  # List of path that are to be backuped
@@ -174,88 +173,85 @@ Services: # Associative array of what to backup
   #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
   #
 
-  FileSystem: # FS Services
-    localDisk:
-      enabled: 0
-      type:    FileSystem
-      subdir:  theLocalDisk/
-      options:
-        pathsToBackup:
-        - /etc/
-        - /root/
-        - /var/www
-        - /var/lib/redmine
-      duplicityOptions:
-      - --exclude **/root/.secret
-  
-  Mysql: # MySQL Services
-    mysql:
-      enabled: 0
-      type:    Mysql
-      subdir:  mysqlServer/
-      options:
-        host:                  localhost
-        port:                  3306
-        user:                  backup
-        password:              some-secure-password
-        mysqlclientfilepath:   /usr/bin/mysql
-        mysqldumpfilepath:     /usr/bin/mysqldump
-        # No "databasesToBackup" config = backup every available database
-        mysqldumpOptions:
-        - --insert-ignore # I prefer to have INSERT IGNORE statements
-        - --events # Avoids a warning when backuping `mysql.event` table
-        compressMethod:        /bin/gzip -9 # Compress dump using gzip
-        compressFileExtension: .gz # Adapt file extension accordingly
-      duplicityOptions:
-      - --asynchronous-upload
-    mysql-dev:
-      enabled: 0
-      type:    Mysql
-      subdir:  developer-mysql/
-      options:
-        host:                 localhost
-        port:                 3307
-        user:                 backup
-        password:             some-secure-password
-        mysqlclientfilepath:  /usr/bin/mysql
-        mysqldumpfilepath:    /usr/bin/mysqldump
-        databasesToBackup: # Only backup following databases
-          mysql: # No specific option for the "mysql" database
-          webapp:
-          - --single-transaction --quick # "webapp" database mostly contains transactional tables such as InnoDB
-  
-  Ldap: # LDAP Services
-    ldap:
-      enabled: 0
-      type:    Ldap
-      subdir:  ldap-directory/
-      options:
-        slapcatFilepath:       /usr/sbin/slapcat
-        slapcatConfigFilepath:  # Let slapcat use it's default value
-        dnTreesToBackup:
-          dc=example,dc=com:
-          - -c
-          ldap:///dc=example,dc=net: # No specific option
-        slapcatOptions:
-        - -v
-        compressMethod:        /bin/gzip -9
-        compressFileExtension: .gz
-      duplicityOptions:
-      - --no-encryption
+  localDisk:
+    enabled: 0
+    type:    FileSystem
+    subdir:  theLocalDisk/
+    options:
+      pathsToBackup:
+      - /etc/
+      - /root/
+      - /var/www
+      - /var/lib/redmine
+    duplicityOptions:
+    - --exclude **/root/.secret
+
+  mysql:
+    enabled: 0
+    type:    Mysql
+    subdir:  mysqlServer/
+    options:
+      host:                  localhost
+      port:                  3306
+      user:                  backup
+      password:              some-secure-password
+      mysqlclientfilepath:   /usr/bin/mysql
+      mysqldumpfilepath:     /usr/bin/mysqldump
+      # No "databasesToBackup" config = backup every available database
+      mysqldumpOptions:
+      - --insert-ignore # I prefer to have INSERT IGNORE statements
+      - --events # Avoids a warning when backuping `mysql.event` table
+      compressMethod:        /bin/gzip -9 # Compress dump using gzip
+      compressFileExtension: .gz # Adapt file extension accordingly
+    duplicityOptions:
+    - --asynchronous-upload
+
+  mysql-dev:
+    enabled: 0
+    type:    Mysql
+    subdir:  developer-mysql/
+    options:
+      host:                 localhost
+      port:                 3307
+      user:                 backup
+      password:             some-secure-password
+      mysqlclientfilepath:  /usr/bin/mysql
+      mysqldumpfilepath:    /usr/bin/mysqldump
+      databasesToBackup: # Only backup following databases
+        mysql: # No specific option for the "mysql" database
+        webapp:
+        - --single-transaction --quick # "webapp" database mostly contains transactional tables such as InnoDB
+
+  ldap:
+    enabled: 0
+    type:    Ldap
+    subdir:  ldap-directory/
+    options:
+      slapcatFilepath:       /usr/sbin/slapcat
+      slapcatConfigFilepath:  # Let slapcat use it's default value
+      dnTreesToBackup:
+        dc=example,dc=com:
+        - -c
+        ldap:///dc=example,dc=net: # No specific option
+      slapcatOptions:
+      - -v
+      compressMethod:        /bin/gzip -9
+      compressFileExtension: .gz
+    duplicityOptions:
+    - --no-encryption
 
 Storages: # Associative array of where to store backups
   # Syntax:
-  # <TYPE>: # Type of the storage (possible values: STORAGE_TYPE_*). It's an associative array of one or more Storage(s) of that type
-  #   <STORAGE_ID>: # One storage of type <TYPE>
-  #     enabled: <integer>             # Set to 0 so skip this storage (= nothing will be stored on it). Set to 1 to enable (= will be used to store backups)
-  #     type:    <string>              # Repeat <TYPE> here (I know, not very clean...)
-  #     options: <Associative array>   # Service-specific options (IP addresses, credentials, etc.)
-  #     duplicity: <Associative array> # Duplicity options
-  #       name: <string>                              # (Optional) Set the symbolic name of the backup being operated on. The intent is to use a separate name for each logically distinct backup. (see Duplicity manpage for "--name")
-  #       fullIfOlder: <time string>                  # (Optional) Perform a full backup if an incremental backup is requested, but the latest full backup in the collection is older than the given time (See Duplicity's "TIME FORMATS" manpage section for more information)
-  #       numberOfFullBackupToKeep: <integer>         # (Optional) Delete all backups sets that are older than the count:th last full backup (in other words, keep the last count full backups and associated incremental sets)
-  #       maximumAgeOfFullBackupToKeep: <time string> # (Optional) Delete all backup sets older than the given time. Old backup sets will not be deleted if backup sets newer than time depend on them. (See Duplicity's "TIME FORMATS" manpage section for more information)
-  #       otherOptions: <List>                        # (Optional) Other options to pass to Duplicity for this Storage only (see Duplicity manpage)
+  # <string>: # A Storage, id-ed by a unique string (see examples below)
+  #   enabled: <integer>             # Set to 0 so skip this storage (= nothing will be stored on it). Set to 1 to enable (= will be used to store backups)
+  #   type:    <string>              # Type of the storage (possible values: STORAGE_TYPE_*)
+  #   options: <Associative array>   # Service-specific options (IP addresses, credentials, etc.)
+  #   duplicity: <Associative array> # Duplicity options
+  #     name: <string>                              # (Optional) Set the symbolic name of the backup being operated on. The intent is to use a separate name for each logically distinct backup. (see Duplicity manpage for "--name")
+  #     fullIfOlder: <time string>                  # (Optional) Perform a full backup if an incremental backup is requested, but the latest full backup in the collection is older than the given time (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #     numberOfFullBackupToKeep: <integer>         # (Optional) Delete all backups sets that are older than the count:th last full backup (in other words, keep the last count full backups and associated incremental sets)
+  #     maximumAgeOfFullBackupToKeep: <time string> # (Optional) Delete all backup sets older than the given time. Old backup sets will not be deleted if backup sets newer than time depend on them. (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #     otherOptions: <List>                        # (Optional) Other options to pass to Duplicity for this Storage only (see Duplicity manpage)
   #
   # Common options to all Storage type:
   #   path: <string> # Relative path where to store backups on storage.
@@ -271,50 +267,49 @@ Storages: # Associative array of where to store backups
   #   port: <integer>                        # Port of MySQL server
   #
 
-  FileSystem:
-    usbBackup:
-      enabled: 0
-      type:    FileSystem
-      options:
-        path: /mnt/usbBackupDisk
-      duplicity:
-        name:                     localCopy
-        fullIfOlder:              1M # Full every months
-        numberOfFullBackupToKeep: 1
-        otherOptions:
-        - --no-encryption # Never encrypt anything when backuping here
-  Ftp:
-    ftpBackup:
-      enabled: 0
-      type:    Ftp
-      options:
-        host:     ftp-backup.example.com
-        port:     21
-        user:     backuper
-        password: some-secure-password
-        path:     /backups/%=backupedServerName%
-      duplicity:
-        fullIfOlder:                  7D # Full every 7 days
-        numberOfFullBackupToKeep:     3  # Keep 3 full backups
-        maximumAgeOfFullBackupToKeep: 2M # Avoid keeping full backup sets older than 2 months
-        otherOptions:
-        - --num-retries 2 # Attempt twice
-        - --volsize 200   # Volumes of 200 Mb
-  Ssh:
-    secureArchiveNas:
-      enabled: 0
-      type:    Ssh
-      options:
-        host:     archive.example.com
-        port:     22222
-        user:     root # Ugly: don't use that
-        password: some-secure-password
-        path:     //data/bckups/servers/%=backupedServerName%/ # Absolute path
-      duplicity:
-        fullIfOlder:              7D # Full every 10 days
-        numberOfFullBackupToKeep: 10 # Keep 10 full backups
-        otherOptions:
-        - --volsize 10 # Volumes of 10 Mb
+  usbBackup:
+    enabled: 0
+    type:    FileSystem
+    options:
+      path: /mnt/usbBackupDisk
+    duplicity:
+      name:                     localCopy
+      fullIfOlder:              1M # Full every months
+      numberOfFullBackupToKeep: 1
+      otherOptions:
+      - --no-encryption # Never encrypt anything when backuping here
+
+  ftpBackup:
+    enabled: 0
+    type:    Ftp
+    options:
+      host:     ftp-backup.example.com
+      port:     21
+      user:     backuper
+      password: some-secure-password
+      path:     /backups/%=backupedServerName%
+    duplicity:
+      fullIfOlder:                  7D # Full every 7 days
+      numberOfFullBackupToKeep:     3  # Keep 3 full backups
+      maximumAgeOfFullBackupToKeep: 2M # Avoid keeping full backup sets older than 2 months
+      otherOptions:
+      - --num-retries 2 # Attempt twice
+      - --volsize 200   # Volumes of 200 Mb
+
+  secureArchiveNas:
+    enabled: 0
+    type:    Ssh
+    options:
+      host:     archive.example.com
+      port:     22222
+      user:     root # Ugly: don't use that
+      password: some-secure-password
+      path:     //data/bckups/servers/%=backupedServerName%/ # Absolute path
+    duplicity:
+      fullIfOlder:              7D # Full every 10 days
+      numberOfFullBackupToKeep: 10 # Keep 10 full backups
+      otherOptions:
+      - --volsize 10 # Volumes of 10 Mb
 EOC
 	close $fh;
 	
@@ -510,16 +505,16 @@ sub compath
 ##
  # Backup a file/directory by sending it to external storage(s)
  #
- # @param hash $service		Infos on service to use
+ # @param string $serviceId	ID of Service to use
  # @param string $path		Absolute path of file/directory to backup
  #
  # @return integer	1 if backup succeeded on at least one storage, 2 if backup succeeded on every storages, 0 if not a single backup succeeded, -1 on configuration/environment error
  ##
 sub backupPath
 {
-	my ($service, $path) = @_;
+	my ($serviceId, $path) = @_;
 	
-	loggedDebug '--- backupPath($service, "' . $path . '") ---';
+	loggedDebug '--- backupPath("' . $serviceId . '", "' . $path . '") ---';
 	
 	my $return = 2;
 	my $failedStorageCount = 0;
@@ -533,33 +528,29 @@ sub backupPath
 		$return = -1;
 	}
 	else {
-		while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storagesToUse)) { # For each type of storages
-			while (my ($currentStorageId, $servicesOfCurrentStorage) = each(%$storagesOfCurrentType)) { # For each storage of that type ($currentStorageType)
-				while (my ($currentServiceId, $currentStorageUsageInfos) = each(%$servicesOfCurrentStorage)) { # For each services of that storage ($currentStorageId)
-					if (!scalar keys($currentStorageUsageInfos->{'pathUsed'}) || !exists($currentStorageUsageInfos->{'pathUsed'}->{$path})) { # No path ever used OR $path not in "pathUsed" hash
-						loggedDebug 'Backup of Path "' . $path . '" for Service "' . $currentServiceId . '" not attempted on Storage "' . $currentStorageId . '" (type "' . $currentStorageType . '")';
-						
-						my $backupResult = executeDuplicityPathBackup(
-							$service,
-							$path,
-							$currentStorageId,
-							$storages->{$currentStorageType}->{$currentStorageId}
-						);
-						
-						if ($backupResult >= 1) {
-							++$succeededStorageCount;
-							loggedMsg '[Backup:' . $currentServiceId . '#' . $path . ' -> ' . $currentStorageId . '] OK';
-							$currentStorageUsageInfos->{'pathUsed'}->{$path} = 1; # Note as OK
-						} else {
-							++$failedStorageCount;
-							loggedError '[Backup:' . $currentServiceId . '#' . $path . ' -> ' . $currentStorageId . '] ERROR';
-							$currentStorageUsageInfos->{'pathUsed'}->{$path} = 0; # Note as erroneous
-						}
-					}
-					else {
-						loggedDebug 'Backup of Path "' . $path . '" for Service "' . $currentServiceId . '" was already attempted on Storage "' . $currentStorageId . '" (type "' . $currentStorageType . '"). Result was ' . ($currentStorageUsageInfos->{'pathUsed'}->{$path} ? 'OK' : 'Not OK');
-					}
+		while (my ($currentStorageId, $currentStorageUsageInfos) = each(%{$storagesToUse->{$serviceId}})) { # For each Storages of Service $serviceId
+			if (!scalar keys($currentStorageUsageInfos->{'pathUsed'}) || !exists($currentStorageUsageInfos->{'pathUsed'}->{$path})) { # No path ever used OR $path not in "pathUsed" hash
+				loggedDebug 'Backup of Path "' . $path . '" for Service "' . $serviceId . '" not attempted on Storage "' . $currentStorageId . '" (type "' . $storages->{$currentStorageId}->{'type'} . '")';
+				
+				my $backupResult = executeDuplicityPathBackup(
+					$serviceId,
+					$path,
+					$currentStorageId,
+					$storages->{$currentStorageId}
+				);
+				
+				if ($backupResult >= 1) {
+					++$succeededStorageCount;
+					loggedMsg '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] OK';
+					$currentStorageUsageInfos->{'pathUsed'}->{$path} = 1; # Note as OK
+				} else {
+					++$failedStorageCount;
+					loggedError '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] ERROR';
+					$currentStorageUsageInfos->{'pathUsed'}->{$path} = 0; # Note as erroneous
 				}
+			}
+			else {
+				loggedDebug 'Backup of Path "' . $path . '" for Service "' . $serviceId . '" was already attempted on Storage "' . $currentStorageId . '" (type "' . $storages->{$currentStorageId}->{'type'} . '"). Result was ' . ($currentStorageUsageInfos->{'pathUsed'}->{$path} ? 'OK' : 'Not OK');
 			}
 		}
 		
@@ -592,7 +583,7 @@ sub backupPath
  #   Service "subdir" is set to "Directory"
  #   Final path on Storage will be: "/backups" + "Directory" + "ldap/example.com" (<Storage's path>/<Service's subdir>/<differentiating part>): /backups/Directory/ldap/example.com
  #
- # @param hash $service				Backuped Service
+ # @param string $serviceId			Backuped Service
  # @param string $sourcePath		Path of a directory to backup (Duplicity cannot backup a file path)
  # @param string $storageId			Storage ID
  # @param hash $storage				Infos on Storage to backup to
@@ -601,9 +592,11 @@ sub backupPath
  ##
 sub executeDuplicityPathBackup
 {
-	my ($service, $sourcePath, $storageId, $storage) = @_;
+	my ($serviceId, $sourcePath, $storageId, $storage) = @_;
 	
-	loggedDebug '--- executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+	loggedDebug '--- executeDuplicityPathBackup("' . $serviceId . '", "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+	
+	my $service = $services->{$serviceId};
 	
 	# Computes the Storage subdir path:
 	my $subdirOnStorage; # Will contains the subdir path to use on Storage
@@ -649,7 +642,7 @@ sub executeDuplicityPathBackup
 		(defined $storage->{'duplicity'}        ? $storage->{'duplicity'}        : undef)
 	);
 	
-	loggedDebug '[Backup:' . $sourcePath . ' -> ' . $storageId . ']: Duplicity backup will be ran with following options: ' . join ' ', @duplicityOptions;
+	loggedDebug '[Backup:' . $serviceId . '#' . $sourcePath . ' -> ' . $storageId . ']: Duplicity backup will be ran with following options: ' . join ' ', @duplicityOptions;
 	
 	my $backupResult = execDuplicityAction('incremental', \@duplicityOptions, $sourcePath, $duplicityCompatibleTargetUrl);
 	
@@ -670,7 +663,7 @@ sub executeDuplicityPathBackup
 		
 		# Cleaning
 		if (defined $storage->{'duplicity'}->{'numberOfFullBackupToKeep'} && int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) > 0) {
-			loggedDebug '[Backup:' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) . ' last full backups...';
+			loggedDebug '[Backup:' . $serviceId . '#' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}) . ' last full backups...';
 			my @duplicityRemoveAllButNFullOptions = @duplicityOptions;
 			push(@duplicityRemoveAllButNFullOptions, '--force');
 			my $removeAllButNFullResult = execDuplicityAction('remove-all-but-n-full ' . int($storage->{'duplicity'}->{'numberOfFullBackupToKeep'}), \@duplicityRemoveAllButNFullOptions, undef, $duplicityCompatibleTargetUrl);
@@ -685,7 +678,7 @@ sub executeDuplicityPathBackup
 			}
 		}
 		if (defined $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} && length $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'}) {
-			loggedDebug '[Backup: ' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only full backup newer than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} . '...';
+			loggedDebug '[Backup:' . $serviceId . '#' . $sourcePath . ' -> ' . $storageId . ']: Will try to clean Storage by keeping only full backup newer than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'} . '...';
 			my @duplicityRemoveOlderThanOptions = @duplicityOptions;
 			push(@duplicityRemoveOlderThanOptions, '--force');
 			my $removeOlderThanResult = execDuplicityAction('remove-older-than ' . $storage->{'duplicity'}->{'maximumAgeOfFullBackupToKeep'}, \@duplicityRemoveOlderThanOptions, undef, $duplicityCompatibleTargetUrl);
@@ -710,7 +703,7 @@ sub executeDuplicityPathBackup
 		delete $ENV{$currentEnvKey}; 
 	}
 	
-	loggedDebug '--- /executeDuplicityPathBackup($service, "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
+	loggedDebug '--- /executeDuplicityPathBackup("' . $serviceId . '", "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
 	
 	return $return;
 }
@@ -993,9 +986,9 @@ sub execDuplicityAction
 sub getStoragesUrl
 {
 	my %urls;
-	while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storagesToUse)) { # For each type of storages
-		while (my ($currentStorageId, $servicesOfCurrentStorage) = each(%$storagesOfCurrentType)) { # For each storage of that type ($currentStorageType)
-			$urls{$currentStorageId} = (getDuplicityStorageUrl($storages->{$currentStorageType}->{$currentStorageId}))[0];
+	while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
+		if ($currentStorageInfos->{'enabled'} == 1) { # If storage is enabled
+			$urls{$currentStorageId} = (getDuplicityStorageUrl($storages->{$currentStorageId}))[0];
 		}
 	}
 	return \%urls;
@@ -1012,16 +1005,16 @@ sub runBackupX
 	
 	loggedMsg '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", "' . $subName . '") ---';
 	
-	loggedDebug 'Will proceed with services of type "' . $serviceType . '" (' . scalar(keys %{$services->{$serviceType}}) . ' service(s) in configuration)...';
-	while (my ($currentServiceId, $currentServiceInfos) = each (%{$services->{$serviceType}})) { # For each services of type $serviceType
-		loggedDebug "\t" . 'Iterating on Service "' . $currentServiceId . '" (enabled = ' . $currentServiceInfos->{'enabled'} . '; subdir = "' . $currentServiceInfos->{'subdir'} . '")';
+	loggedDebug 'Will proceed with services of type "' . $serviceType . '" (' . (0+scalar(@{$servicesByTypes->{$serviceType}})) . ' service(s) in configuration)...';
+	foreach my $currentServiceId (@{$servicesByTypes->{$serviceType}}) { # For each services of type $serviceType
+		loggedDebug "\t" . 'Iterating on Service "' . $currentServiceId . '" (enabled = ' . $services->{$currentServiceId}->{'enabled'} . '; subdir = "' . $services->{$currentServiceId}->{'subdir'} . '")';
 		
-		if ($currentServiceInfos->{'enabled'} == 1) {
+		if ($services->{$currentServiceId}->{'enabled'} == 1) {
 			#TODO: Support pre-service-run hooks (run any command(s) listed in configuration file)
 			loggedMsg '--------------------------------------------------------------------------------';
 			loggedMsg '- Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '"';
 			loggedMsg '----------';
-			$serviceRuns->{$serviceType}{$currentServiceId}{'result'} = $subName->($currentServiceInfos);
+			$serviceRuns->{$serviceType}{$currentServiceId}{'result'} = $subName->($currentServiceId);
 			$serviceRuns->{$serviceType}{$currentServiceId}{'ran'} = 1;
 			loggedMsg '';
 			if ($serviceRuns->{$serviceType}{$currentServiceId}{'result'} == 1) {
@@ -1059,15 +1052,17 @@ sub runBackupX
 ##
  # Backup FS files
  #
- # @param hash $service	Infos on FS service to backup
+ # @param string $serviceId	ID of Service to backup
  #
  # @return integer	1 on success, 0 on (any) error
  ##
 sub backupFs
 {
-	my $service = $_[0];
+	my $serviceId = $_[0];
 	
-	loggedDebug '--- backupFs($service) ---';
+	my $service = $services->{$serviceId};
+	
+	loggedDebug '--- backupFs("' .$serviceId . '") ---';
 	
 	if ($service->{'type'} ne SERVICE_TYPE_FILESYSTEM) {
 		loggedError 'Given service is not of expected "' . SERVICE_TYPE_FILESYSTEM . '" type (is "' . $service->{'type'} . '"): can\'t continue';
@@ -1079,13 +1074,13 @@ sub backupFs
 	loggedDebug 'List of path to backup';
 	foreach (@{ $service->{'options'}{'pathsToBackup'} }) { # For each path to backup #TODO: Move to a "pathsToBackup" hash (instead of an array) allowing to pass specific duplicity options for this path (as in MySQL and LDAP services)
 		if ($_ ne '') {
-			if (backupPath($service, $_) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $_) == 0) { # backupPath() failed to backup
 				$noBackupError = 0;
 			}
 		}
 	}
 	
-	loggedDebug '--- /backupFs($service) ---';
+	loggedDebug '--- /backupFs("' .$serviceId . '") ---';
 	
 	return $noBackupError;
 }
@@ -1097,15 +1092,17 @@ sub backupFs
 ##
  # Backup a LDAP server by dumping it's tree
  #
- # @param hash $service	Infos on FS service to backup
+ # @param string $serviceId	ID of Service to backup
  #
  # @return integer	1 on success, 0 on (any) error
  ##
 sub backupLdap
 {
-	my $service = $_[0];
+	my $serviceId = $_[0];
 	
-	loggedDebug '--- backupLdap($service) ---';
+	my $service = $services->{$serviceId};
+	
+	loggedDebug '--- backupLdap("' .$serviceId . '") ---';
 	
 	if ($service->{'type'} ne SERVICE_TYPE_LDAP) {
 		loggedError 'Given service is not of expected "' . SERVICE_TYPE_LDAP . '" type (is "' . $service->{'type'} . '"): can\'t continue';
@@ -1122,7 +1119,7 @@ sub backupLdap
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
 			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
-			if (backupPath($service, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
 				loggedError 'Error occured when backuping LDAP Tree dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
@@ -1138,7 +1135,7 @@ sub backupLdap
 	}
 	# /Looping on "dnTreesToBackup" #
 	
-	loggedDebug '--- /backupLdap($service) ---';
+	loggedDebug '--- /backupLdap("' .$serviceId . '") ---';
 	
 	return $noBackupError;
 }
@@ -1224,15 +1221,17 @@ sub service_ldap_dumpDnTree
 ##
  # Backup a MySQL server by dumping it's databases
  #
- # @param hash $service	Infos on MySQL service to backup
+ # @param string $serviceId	ID of Service to backup
  #
  # @return integer	1 on success, 0 on (any) error
  ##
 sub backupMysql
 {
-	my $service = $_[0];
+	my $serviceId = $_[0];
 	
-	loggedDebug '--- backupMysql($service) ---';
+	my $service = $services->{$serviceId};
+	
+	loggedDebug '--- backupMysql("' .$serviceId . '") ---';
 	
 	if ($service->{'type'} ne SERVICE_TYPE_MYSQL) {
 		loggedError 'Given service is not of expected "' . SERVICE_TYPE_MYSQL . '" type (is "' . $service->{'type'} . '"): can\'t continue';
@@ -1265,7 +1264,7 @@ sub backupMysql
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
 			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
-			if (backupPath($service, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
 				loggedError 'Error occured when backuping MySQL dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
@@ -1281,7 +1280,7 @@ sub backupMysql
 	}
 	# /Looping on populated @databasesToDump #
 	
-	loggedDebug '--- /backupMysql($service) ---';
+	loggedDebug '--- /backupMysql("' .$serviceId . '") ---';
 	
 	return $noBackupError;
 }
@@ -1380,41 +1379,38 @@ SET SQL_LOG_BIN=0; \\
 ##### Process #####
 
 # Prepare statuses of each service
+my %servicesByTypes = (); # Every enabled service grouped by service type
 my %serviceRuns = ();
-while (my ($currentServiceType, $servicesOfCurrentType) = each(%$services)) { # For each type of services
-	$serviceRuns->{$currentServiceType} = ();
-	while (my ($currentServiceId, $currentServiceInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
-		if ($currentServiceInfos->{'enabled'} == 1) { # If service is enabled
-			$serviceRuns->{$currentServiceType}{$currentServiceId} = { # Mark it as:
-				ran    => 0,		# Not run (yet)
-				result => undef,	# Unknown result (yet)
-			};
+
+while (my ($currentServiceId, $currentServiceInfos) = each(%$services)) { # For each services
+	if ($currentServiceInfos->{'enabled'} == 1) { # If service is enabled
+		$serviceRuns->{$currentServiceId} = { # Mark it as:
+			ran    => 0,		# Not run (yet)
+			result => undef,	# Unknown result (yet)
+		};
+		if (! defined $servicesByTypes->{$currentServiceInfos->{'type'}}) { # First service of this type to be iterated on
+			$servicesByTypes->{$currentServiceInfos->{'type'}} = [];
 		}
-	}
-	if (! defined $serviceRuns->{$currentServiceType}) { # If no services were added for that type ($currentServiceType)
-		delete $serviceRuns->{$currentServiceType}; # Remove (because it's useless)
+		push($servicesByTypes->{$currentServiceInfos->{'type'}}, $currentServiceId);
 	}
 }
 # /Prepare statuses of each service
 
 
 # Prepare statuses of each storage
-my %storagesToUse = ();
-while (my ($currentStorageType, $storagesOfCurrentType) = each(%$storages)) { # For each type of storages
-	$storagesToUse->{$currentStorageType} = ();
-	while (my ($currentStorageId, $currentStorageInfos) = each(%$storagesOfCurrentType)) { # For each storages of that type ($storagesOfCurrentType)
+my %storagesToUse = (); # Tells, for a given Service (hash index is Service ID) which Storage must be used and, for each Storage, what path was already used
+
+foreach my $currentServiceId (keys(%$serviceRuns)) { # For each (enabled) service
+	$storagesToUse->{$currentServiceId} = ();
+	while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
 		if ($currentStorageInfos->{'enabled'} == 1) { # If storage is enabled
-			while (my ($currentServiceType, $servicesOfCurrentType) = each(%$serviceRuns)) { # For each type of services to run
-				while (my ($currentServiceId, $currentServiceInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
-					$storagesToUse->{$currentStorageType}{$currentStorageId}{$currentServiceId} = { # Mark current storage-service pair as:
-						pathUsed => {}, # No path used (yet)
-					};
-				}
-			}
+			$storagesToUse->{$currentServiceId}{$currentStorageId} = { # Mark current storage-service pair as:
+				pathUsed => {}, # No path used (yet)
+			};
 		}
 	}
-	if (! defined $storagesToUse->{$currentStorageType}) { # If no storages were added for that type ($currentStorageType)
-		delete $storagesToUse->{$currentStorageType}; # Remove (because it's useless)
+	if (! defined $storagesToUse->{$currentServiceId}) { # If no storages were added for that service
+		delete $storagesToUse->{$currentServiceId}; # Remove (because it's useless)
 	}
 }
 # /Prepare statuses of each storage
@@ -1444,7 +1440,7 @@ if(keys($storagesToUse) == 0) {
 
 
 print "\n";
-loggedMsg 'Will backup ' . keys($serviceRuns) . ' service(s) data on ' . keys($storagesToUse) . ' storages:';
+loggedMsg 'Will backup ' . keys($serviceRuns) . ' service(s) data on ' . keys($storagesToUse->{(keys $serviceRuns)[0]}) . ' storages:';
 my $storagesUrl = getStoragesUrl();
 while (my ($currentStorageId, $currentStorageUrl) = each($storagesUrl)) {
 	loggedDebug 'Storage "' . $currentStorageId . '" to location: ' . $currentStorageUrl;
@@ -1503,10 +1499,8 @@ if ($noBackupErrors == 1 || !defined $noBackupErrors) { # If no errors OR if not
 }
 elsif ($noBackupErrors == 0 || !dirIsEmpty($currentBackupRunWorkingPath)) { # Error occured
 	loggedError 'There are still files in working path ("' . $currentBackupRunWorkingPath . '"): At least one backup went bad, no cleaning will be performed.';
-	while (my ($currentServiceType, $servicesOfCurrentType) = each(%$serviceRuns)) { # For each type of services
-		while (my ($currentServiceId, $currentServiceRunInfos) = each(%$servicesOfCurrentType)) { # For each services of that type ($currentServiceType)
-			loggedDebug 'Service "' . $currentServiceId . '" (type "' . $currentServiceType . '") ' . ($currentServiceRunInfos->{'ran'} == 1 ? 'ran: ' . (defined $currentServiceRunInfos->{'result'} && $currentServiceRunInfos->{'result'} == 1 ? 'OK' : 'NOT OK') : 'not ran'); 
-		}
+	while (my ($currentServiceId, $currentServiceRunInfos) = each(%$serviceRuns)) { # For each services
+		loggedDebug 'Service "' . $currentServiceId . '" (type "' . $services->{$currentServiceId}->{'type'} . '") ' . ($currentServiceRunInfos->{'ran'} == 1 ? 'ran: ' . (defined $currentServiceRunInfos->{'result'} && $currentServiceRunInfos->{'result'} == 1 ? 'OK' : 'NOT OK') : 'not ran'); 
 	}
 	#TODO: Write log file in $currentBackupRunWorkingPath
 }
