@@ -1003,7 +1003,7 @@ sub runBackupX
 {
 	my ($serviceType, $serviceTypeFriendlyName, $subName) = @_;
 	
-	loggedMsg '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", "' . $subName . '") ---';
+	loggedMsg '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
 	
 	loggedDebug 'Will proceed with services of type "' . $serviceType . '" (' . (0+scalar(@{$servicesByTypes->{$serviceType}})) . ' service(s) in configuration)...';
 	foreach my $currentServiceId (@{$servicesByTypes->{$serviceType}}) { # For each services of type $serviceType
@@ -1041,7 +1041,7 @@ sub runBackupX
 		}
 	}
 	
-	loggedMsg '--- /runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", "' . $subName . '") ---';
+	loggedMsg '--- /runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
 }
 
 ## /Service runs ##
