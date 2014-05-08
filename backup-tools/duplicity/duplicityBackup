@@ -39,6 +39,7 @@ use Log::Message::Simple qw[:STD :CARP];
 use DateTime; # Debian package "libdatetime-perl"
 use Date::Parse; # Debian package "libtimedate-perl"
 
+use Cwd 'abs_path';
 use File::Basename;
 use File::chmod qw(getmod); # Debian package "libfile-chmod-perl"
 use File::Path qw(remove_tree make_path);
@@ -913,6 +914,12 @@ sub execDuplicityAction
 	if (!defined $options) {
 		loggedDebug 'No $options';
 		$options = ();
+	}
+	
+	if (-l $source) { # Given source is a symbolic link
+		$source = abs_path($source); # Resolve it otherwise Duplicity won't backup target (but symbolic link itself)
+		loggedDebug '$source was a symbolic link, resolved to: ' . $source;
+		push(@{ $options }, '--allow-source-mismatch'); # Required option to avoid Duplicity message: "Aborting because you may have accidentally tried to backup two different data sets to the same remote location, or using the same archive directory."
 	}
 	
 	my $source_withQuotes = '';
