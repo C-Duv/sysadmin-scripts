@@ -315,6 +315,14 @@ EOC
 	close $fh;
 	
 	print 'Example configuration file written to "' . $createExampleConfig . '"' . "\n";
+	
+	if (chmod 0600, $createExampleConfig) {
+		print 'Permission of file "' . $createExampleConfig . '" set to a secure "0600"' . "\n";
+	}
+	else {
+		print 'WARN: Could not set permission of file "' . $createExampleConfig . '", please change it prior to writing sensitive stuff into it.' . "\n";
+	}
+	
 	exit 0;
 }
 # /Handle "create-config" action
