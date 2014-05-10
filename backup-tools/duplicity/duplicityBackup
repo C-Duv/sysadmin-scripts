@@ -550,17 +550,18 @@ sub backupPath
 				
 				if ($backupResult >= 1) {
 					++$succeededStorageCount;
-					loggedMsg '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] OK';
+					loggedDebug '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] OK';
 					$currentStorageUsageInfos->{'pathUsed'}->{$path} = 1; # Note as OK
 				} else {
 					++$failedStorageCount;
-					loggedError '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] ERROR';
+					loggedDebug '[Backup:' . $serviceId . '#' . $path . ' -> ' . $currentStorageId . '] ERROR';
 					$currentStorageUsageInfos->{'pathUsed'}->{$path} = 0; # Note as erroneous
 				}
 			}
 			else {
 				loggedDebug 'Backup of Path "' . $path . '" for Service "' . $serviceId . '" was already attempted on Storage "' . $currentStorageId . '" (type "' . $storages->{$currentStorageId}->{'type'} . '"). Result was ' . ($currentStorageUsageInfos->{'pathUsed'}->{$path} ? 'OK' : 'Not OK');
 			}
+			print "\n";
 		}
 		
 		return 2 unless $failedStorageCount > 0; # Every backup succeeded
@@ -1018,7 +1019,7 @@ sub runBackupX
 {
 	my ($serviceType, $serviceTypeFriendlyName, $subName) = @_;
 	
-	loggedMsg '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
+	loggedDebug '--- runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
 	
 	loggedDebug 'Will proceed with services of type "' . $serviceType . '" (' . (0+scalar(@{$servicesByTypes->{$serviceType}})) . ' service(s) in configuration)...';
 	foreach my $currentServiceId (@{$servicesByTypes->{$serviceType}}) { # For each services of type $serviceType
@@ -1029,16 +1030,18 @@ sub runBackupX
 			loggedMsg '--------------------------------------------------------------------------------';
 			loggedMsg '- Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '"';
 			loggedMsg '----------';
+			print "\n";
+			
 			$serviceRuns->{$serviceType}{$currentServiceId}{'result'} = $subName->($currentServiceId);
 			$serviceRuns->{$serviceType}{$currentServiceId}{'ran'} = 1;
-			loggedMsg '';
+			print "\n";
 			if ($serviceRuns->{$serviceType}{$currentServiceId}{'result'} == 1) {
-				loggedMsg 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '" => OK';
+				loggedMsg 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '": OK';
 				#TODO: Support success-service-run hooks (run any command(s) listed in configuration file)
 				$noBackupErrors = 1 unless defined $noBackupErrors;
 			}
 			else {
-				loggedError 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '" => ERROR';
+				loggedError 'Backup ' . $serviceTypeFriendlyName . ' service "' . $currentServiceId . '": ERROR';
 				$noBackupErrors = 0;
 				#TODO: Support fail-service-run hooks (run any command(s) listed in configuration file)
 			}
@@ -1046,7 +1049,6 @@ sub runBackupX
 			
 			
 			print "\n";
-			loggedMsg '';
 			print "\n";
 			
 			#TODO: Support post-service-run hooks (run any command(s) listed in configuration file)
@@ -1056,7 +1058,7 @@ sub runBackupX
 		}
 	}
 	
-	loggedMsg '--- /runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
+	loggedDebug '--- /runBackupX("' . $serviceType . '", "' . $serviceTypeFriendlyName . '", $subName) ---';
 }
 
 ## /Service runs ##
@@ -1129,17 +1131,16 @@ sub backupLdap
 	while (my ($currentDnTree, $currentDnTreeOptionList) = each (%{$service->{'options'}{'dnTreesToBackup'}})) {
 		loggedDebug 'Will dump DN "' . $currentDnTree . '" with options ' . (join ' ', @{ $currentDnTreeOptionList });
 		my $currentDumpFilepath = service_ldap_dumpDnTree($service, $currentDnTree, $currentDnTreeOptionList);
-		loggedDebug 'Dumping of DN "' . $currentDnTree . '" finished';
 		
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
-			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
+			loggedMsg 'LDAP tree of DN "' . $currentDnTree . '" was successfully dumped into "' . $currentDumpFilepath . '", will now backup "' . $currentDumpFilepathContainingDir . '"';
 			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
-				loggedError 'Error occured when backuping LDAP Tree dump "' . $currentDumpFilepathContainingDir . '"';
+				loggedError 'Error occured when backuping LDAP tree dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
 			else {
-				loggedDebug 'Backup of LDAP Tree dump "' . $currentDumpFilepathContainingDir . '" went OK';
+				loggedDebug 'Backup of LDAP tree dump "' . $currentDumpFilepathContainingDir . '" went OK, will remove "' . $currentDumpFilepath . '" and "' . $currentDumpFilepathContainingDir . '"';
 				unlink $currentDumpFilepath;
 				rmdir $currentDumpFilepathContainingDir;
 			}
@@ -1199,7 +1200,7 @@ sub service_ldap_dumpDnTree
 		}
 	}
 	
-	loggedMsg 'Dumping "' . $dnTree . '" tree into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
+	loggedDebug 'Dumping "' . $dnTree . '" tree into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
 	
 	# Dump compression command
 	my $compressCommand = '';
@@ -1274,17 +1275,16 @@ sub backupMysql
 	foreach (@databasesToDump) {
 		loggedDebug 'Will dump database "' . $_->[0] . '" with options ' . (join ' ', @{ $_->[1] });
 		my $currentDumpFilepath = service_mysql_dumpDatabase($service, $_->[0], $_->[1]);
-		loggedDebug 'Dumping of database "' . $_->[0] . '" finished';
 		
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
-			loggedDebug 'Dumped into: "' . $currentDumpFilepath . '", will backup "' . $currentDumpFilepathContainingDir . '"';
+			loggedMsg 'Database "' . $_->[0] . '" was successfully dumped into "' . $currentDumpFilepath . '", will now backup "' . $currentDumpFilepathContainingDir . '"';
 			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
 				loggedError 'Error occured when backuping MySQL dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
 			else {
-				loggedDebug 'Backup of MySQL dump "' . $currentDumpFilepathContainingDir . '" went OK';
+				loggedDebug 'Backup of MySQL dump "' . $currentDumpFilepathContainingDir . '" went OK, will remove "' . $currentDumpFilepath . '" and "' . $currentDumpFilepathContainingDir . '"';
 				unlink $currentDumpFilepath;
 				rmdir $currentDumpFilepathContainingDir;
 			}
@@ -1350,7 +1350,7 @@ sub service_mysql_dumpDatabase
 		}
 	}
 	
-	loggedMsg 'Dumping "' . $databaseName . '" database into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
+	loggedDebug 'Dumping "' . $databaseName . '" database into "' . $dumpFilePath . '" with following options: ' . (join ' ', @finalDumperOptions);
 	
 	# Dump compression command
 	my $compressCommand = '';
@@ -1499,16 +1499,16 @@ runBackupX(SERVICE_TYPE_MYSQL, 'MySQL', \&backupMysql);
 if ($noBackupErrors == 1 || !defined $noBackupErrors) { # If no errors OR if nothing ran (!defined $noBackupErrors)
 	# Remove $currentBackupRunWorkingPath directory
 	loggedMsg '--------------------------------------------------------------------------------';
-	loggedMsg '- Deleting temporary working path ("' . $currentBackupRunWorkingPath . '")';
+	loggedMsg '- Cleaning';
 	loggedMsg '----------';
+	print "\n";
 	
 	remove_tree($currentBackupRunWorkingPath, {keep_root => 1}); #TODO: Test if dir is really empty instead of relying on $noBackupErrors?
-	
 	if ($? == 0) {
-		loggedMsg '=> OK';
+		loggedMsg 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): OK';
 	}
 	else {
-		loggedError '=> NOK';
+		loggedError 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): NOK';
 	}
 	loggedMsg '--------------------------------------------------------------------------------';
 }
