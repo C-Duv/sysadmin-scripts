@@ -45,7 +45,7 @@ use File::chmod qw(getmod); # Debian package "libfile-chmod-perl"
 use File::Path qw(remove_tree make_path);
 use File::Spec;
 
-use URI;
+use URI; # Debian package "liburi-perl"
 
 use Capture::Tiny ':all'; # Debian package "libcapture-tiny-perl"
 use YAML::XS; # Debian package "libyaml-libyaml-perl"
