@@ -5,7 +5,7 @@
 #
 # Backups data of file system and various services via Duplicity
 #
-# @version 0.1.1
+# @version 0.1.2
 #
 # @requires duplicity (Encrypted backup using rsync algorithm)
 #                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
@@ -25,6 +25,7 @@
 # @requires Perl "Capture::Tiny"
 # @requires Perl "YAML::XS"
 
+use 5.010;
 
 ##### Modules #####
 use Switch;
@@ -538,7 +539,7 @@ sub backupPath
 	}
 	else {
 		while (my ($currentStorageId, $currentStorageUsageInfos) = each(%{$storagesToUse->{$serviceId}})) { # For each Storages of Service $serviceId
-			if (!scalar keys($currentStorageUsageInfos->{'pathUsed'}) || !exists($currentStorageUsageInfos->{'pathUsed'}->{$path})) { # No path ever used OR $path not in "pathUsed" hash
+			if (!scalar keys(%{$currentStorageUsageInfos->{'pathUsed'}}) || !exists($currentStorageUsageInfos->{'pathUsed'}->{$path})) { # No path ever used OR $path not in "pathUsed" hash
 				loggedDebug 'Backup of Path "' . $path . '" for Service "' . $serviceId . '" not attempted on Storage "' . $currentStorageId . '" (type "' . $storages->{$currentStorageId}->{'type'} . '")';
 				
 				my $backupResult = executeDuplicityPathBackup(
@@ -639,7 +640,7 @@ sub executeDuplicityPathBackup
 	@duplicityTargetUrl = getDuplicityStorageUrl($storage, $subdirOnStorage); # [0] stores the URL, [1] potentially stores a list of environment variables
 	
 	my $duplicityCompatibleTargetUrl = @duplicityTargetUrl[0];
-	while (my ($currentEnvKey, $currentEnvVal) = each(@duplicityTargetUrl[1])) # For each returned environment variable
+	while (my ($currentEnvKey, $currentEnvVal) = each(%{@duplicityTargetUrl[1]})) # For each returned environment variable
 	{
 		$ENV{$currentEnvKey} = $currentEnvVal;
 	}
@@ -708,7 +709,7 @@ sub executeDuplicityPathBackup
 	}
 	
 	# Remove/clean environment variables before returning
-	while (my ($currentEnvKey, $currentEnvVal) = each(@duplicityTargetUrl[1]))
+	while (my ($currentEnvKey, $currentEnvVal) = each(%{@duplicityTargetUrl[1]}))
 	{
 		delete $ENV{$currentEnvKey}; 
 	}
@@ -822,7 +823,7 @@ sub getDuplicityOptions
 	loggedDebug 'Options sources:';
 	loggedDebug '  Global: ' .  join ' ', @{ $duplicity->{'globalOptions'} };
 	loggedDebug '  Service: ' . join ' ', @{ $serviceOptions };
-	loggedDebug '  Storage: ' . join ' ', keys($storageOptions);
+	loggedDebug '  Storage: ' . join ' ', keys(%$storageOptions);
 	
 	my @duplicityOptions = ();
 	
@@ -1406,7 +1407,7 @@ while (my ($currentServiceId, $currentServiceInfos) = each(%$services)) { # For 
 		if (! defined $servicesByTypes->{$currentServiceInfos->{'type'}}) { # First service of this type to be iterated on
 			$servicesByTypes->{$currentServiceInfos->{'type'}} = [];
 		}
-		push($servicesByTypes->{$currentServiceInfos->{'type'}}, $currentServiceId);
+		push(@{$servicesByTypes->{$currentServiceInfos->{'type'}}}, $currentServiceId);
 	}
 }
 # /Prepare statuses of each service
@@ -1442,11 +1443,11 @@ loggedMsg 'Backup script for server "' . $config->{'backupedServerName'} . '" st
 
 
 # Test if there is any service or storage enabled
-if(keys($serviceRuns) == 0) {
+if(keys(%$serviceRuns) == 0) {
 	loggedError 'Nothing to backup. Make sure "Services" configuration contains at least one enabled service';
 	exit 78;
 }
-if(keys($storagesToUse) == 0) {
+if(keys(%$storagesToUse) == 0) {
 	loggedError 'Nowhere to backup to. Make sure "Storages" configuration contains at least one enabled storage.';
 	exit 78;
 }
@@ -1455,9 +1456,9 @@ if(keys($storagesToUse) == 0) {
 
 
 print "\n";
-loggedMsg 'Will backup ' . keys($serviceRuns) . ' service(s) data on ' . keys($storagesToUse->{(keys $serviceRuns)[0]}) . ' storages:';
+loggedMsg 'Will backup ' . keys(%$serviceRuns) . ' service(s) data on ' . keys(%{$storagesToUse->{(keys %$serviceRuns)[0]}}) . ' storages:';
 my $storagesUrl = getStoragesUrl();
-while (my ($currentStorageId, $currentStorageUrl) = each($storagesUrl)) {
+while (my ($currentStorageId, $currentStorageUrl) = each(%$storagesUrl)) {
 	loggedDebug 'Storage "' . $currentStorageId . '" to location: ' . $currentStorageUrl;
 }
 
