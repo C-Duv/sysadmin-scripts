@@ -159,6 +159,7 @@ Services: # Associative array of what to backup
   #   databasesToBackup: <Associative array> # (Optional) Databases to backup (if option is ommitted, will backup every database).
   #                                            Contains "Database Name / mysqldump options list" couples.
   #                                            Given options are passed to mysqldump only when dumping the corresponding database.
+  #   databasesToIgnore: <List>              # (Optional) List of databases to ignore/skip. Only used when databasesToBackup is not set.
   #   mysqldumpOptions: <List>               # (Optional) Options to pass to mysqldump (global within this Service: used for each database)
   #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
   #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
@@ -200,6 +201,9 @@ Services: # Associative array of what to backup
       mysqlclientfilepath:   /usr/bin/mysql
       mysqldumpfilepath:     /usr/bin/mysqldump
       # No "databasesToBackup" config = backup every available database
+      databasesToIgnore:
+      - information_schema
+      - performance_schema
       mysqldumpOptions:
       - --insert-ignore # I prefer to have INSERT IGNORE statements
       - --events # Avoids a warning when backuping `mysql.event` table
@@ -1266,7 +1270,13 @@ sub backupMysql
 	else { # Backup every database
 		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --host="' . $service->{'options'}{'host'} . '" --port=' . $service->{'options'}{'port'} . ' --user="' . $service->{'options'}{'user'} . '" --password="' . $service->{'options'}{'password'} . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
 		while (<FH>) {
-			push(@databasesToDump, [(substr $_, 0, -1), []]);
+			my $dbName = (substr $_, 0, -1);
+			if (defined $service->{'options'}{'databasesToIgnore'} && $dbName ~~ $service->{'options'}{'databasesToIgnore'}) { # A list of databases to ignore was given and $dbName is in it
+				loggedDebug 'Database "' . $dbName . '" is listed in "databasesToIgnore" options: will not add it to @databasesToDump';
+			}
+			else {
+				push(@databasesToDump, [$dbName, []]);
+			}
 		}
 		close FH;
 	}
