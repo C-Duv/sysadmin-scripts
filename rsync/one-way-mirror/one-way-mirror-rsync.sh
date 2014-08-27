@@ -44,6 +44,7 @@ rsyncExecutable="/usr/bin/rsync"
 #rsyncIncludeList="$(dirname "$0")/rsync-include-list"
 rsyncLogFilepath="$0.log"
 #rsyncOtherOptions="--cvs-exclude"
+#rsyncRshOtherOptions="-T -o Compression=no -x"
 
 sshExecutable="/usr/bin/ssh"
 
@@ -132,6 +133,11 @@ if [ -n "$rsyncIncludeList" ]; then
     includeFromPart="--include-from=\"$rsyncIncludeList\""
 fi
 
+rsyncRshOtherOptionsPart=()
+if [ -n "$rsyncRshOtherOptions" ]; then
+    rsyncRshOtherOptionsPart=($rsyncRshOtherOptions)
+fi
+
 rshPart=""
 # Source parameter
 if [ -n "$sourceHost" ]; then
@@ -144,6 +150,7 @@ if [ -n "$sourceHost" ]; then
         if [ -n "$sourceSshPort" ]; then
             rshPart="$rshPart -p $sourceSshPort"
         fi
+        rshPart="$rshPart ${rsyncRshOtherOptionsPart[@]}"
         rshPart=(--rsh="$rshPart")
     fi
 else
@@ -166,6 +173,7 @@ if [ -n "$destinationHost" ]; then
         if [ -n "$destinationSshPort" ]; then
             rshPart="$rshPart -p $destinationSshPort"
         fi
+        rshPart="$rshPart ${rsyncRshOtherOptionsPart[@]}"
         rshPart=(--rsh="$rshPart")
     fi
 else
