@@ -95,7 +95,13 @@ pod2usage(-verbose => 2) if $man;
 if (@ARGV) {
 	$mainAction = $ARGV[0];
 	if ($mainAction eq 'create-config') {
-		$createExampleConfig = $ARGV[1];
+		if (defined $ARGV[1]) {
+			$createExampleConfig = $ARGV[1];
+		}
+		else {
+			print 'Action "' . $mainAction . '" requires a filepath where to file the configuration file to.' . "\n";
+			pod2usage(64);
+		}
 	}
 }
 # /Read main action from @ARGV
