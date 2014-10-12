@@ -1146,7 +1146,7 @@ sub backupFs
 	loggedDebug 'List of path to backup';
 	foreach (@{ $service->{'options'}{'pathsToBackup'} }) { # For each path to backup #TODO: Move to a "pathsToBackup" hash (instead of an array) allowing to pass specific duplicity options for this path (as in MySQL and LDAP services)
 		if ($_ ne '') {
-			if (backupPath($serviceId, $_) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $_) != 2) { # backupPath() failed to backup
 				$noBackupError = 0;
 			}
 		}
@@ -1190,7 +1190,7 @@ sub backupLdap
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
 			loggedMsg 'LDAP tree of DN "' . $currentDnTree . '" was successfully dumped into "' . $currentDumpFilepath . '", will now backup "' . $currentDumpFilepathContainingDir . '"';
-			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $currentDumpFilepathContainingDir) != 2) { # backupPath() failed to backup
 				loggedError 'Error occured when backuping LDAP tree dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
@@ -1343,7 +1343,7 @@ sub backupMysql
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
 			loggedMsg 'Database "' . $_->[0] . '" was successfully dumped into "' . $currentDumpFilepath . '", will now backup "' . $currentDumpFilepathContainingDir . '"';
-			if (backupPath($serviceId, $currentDumpFilepathContainingDir) == 0) { # backupPath() failed to backup
+			if (backupPath($serviceId, $currentDumpFilepathContainingDir) != 2) { # backupPath() failed to backup
 				loggedError 'Error occured when backuping MySQL dump "' . $currentDumpFilepathContainingDir . '"';
 				$noBackupError = 0;
 			}
