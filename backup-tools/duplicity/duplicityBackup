@@ -1309,6 +1309,9 @@ sub backupMysql
 		return 0;
 	}
 	
+	# Create the MySQL option file
+	my $mysqlOptionFile = service_mysql_createOptionFile($serviceId);
+	
 	my @databasesToDump = (); # Will contains couples of the name of each database to dump and the mysqldump options to use for it
 	
 	# Populate @databasesToDump with stuff from config
@@ -1318,7 +1321,7 @@ sub backupMysql
 		}
 	}
 	else { # Backup every database
-		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --host="' . $service->{'options'}{'host'} . '" --port=' . $service->{'options'}{'port'} . ' --user="' . $service->{'options'}{'user'} . '" --password="' . $service->{'options'}{'password'} . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
+		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --defaults-extra-file="' . $mysqlOptionFile . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
 		while (<FH>) {
 			my $dbName = (substr $_, 0, -1);
 			if (defined $service->{'options'}{'databasesToIgnore'} && $dbName ~~ $service->{'options'}{'databasesToIgnore'}) { # A list of databases to ignore was given and $dbName is in it
@@ -1335,7 +1338,7 @@ sub backupMysql
 	my $noBackupError = 1;
 	foreach (@databasesToDump) {
 		loggedDebug 'Will dump database "' . $_->[0] . '" with options ' . (join ' ', @{ $_->[1] });
-		my $currentDumpFilepath = service_mysql_dumpDatabase($service, $_->[0], $_->[1]);
+		my $currentDumpFilepath = service_mysql_dumpDatabase($service, $_->[0], $mysqlOptionFile, $_->[1]);
 		
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
@@ -1356,6 +1359,9 @@ sub backupMysql
 	}
 	# /Looping on populated @databasesToDump #
 	
+	# Remove the MySQL option file
+	unlink $mysqlOptionFile;
+	
 	loggedDebug '--- /backupMysql("' .$serviceId . '") ---';
 	
 	return $noBackupError;
@@ -1366,15 +1372,16 @@ sub backupMysql
  #
  # @param hash $service						Infos on MySQL service to use
  # @param string $databaseName				Name of database to dump
+ # @param string $defaultsExtraFile			Path of file to pass to "--defaults-extra-file" option
  # @param array $databaseMysqldumpOptions	(Optional) mysqldump options to use for this database
  #
  # @return string Absolute path of the database dump, undef if dump process failed
  ##
 sub service_mysql_dumpDatabase
 {
-	my ($service, $databaseName, $databaseMysqldumpOptions) = @_;
+	my ($service, $databaseName, $defaultsExtraFile, $databaseMysqldumpOptions) = @_;
 	
-	loggedDebug '--- service_mysql_dumpDatabase($service, "' . $databaseName . '", $databaseMysqldumpOptions) ---';
+	loggedDebug '--- service_mysql_dumpDatabase($service, "' . $databaseName . '", "' . $defaultsExtraFile . '", $databaseMysqldumpOptions) ---';
 	
 	# Create the service workingPath:
 	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $databaseName);
@@ -1387,8 +1394,9 @@ sub service_mysql_dumpDatabase
 	}
 	my $dumpFilePath = File::Spec->catfile($pathWhereToDump, $dumpFileName);
 	
-	# Default mysqldump options
+	# Default mysqldump options (MySQL option file must be first)
 	my @finalDumperOptions = (
+		' --defaults-extra-file="' . $defaultsExtraFile . '"',
 		'--comments',
 		'--dump-date',
 		'--allow-keywords',
@@ -1422,7 +1430,6 @@ sub service_mysql_dumpDatabase
 	# Execute dump and (possible) compression command:
 	my ($stdout, $stderr, $exitCode) = capture {
 		system($service->{'options'}{'mysqldumpfilepath'}
-				. ' --host=' . $service->{'options'}{'host'} . ' --port=' . $service->{'options'}{'port'} . ' --user=' . $service->{'options'}{'user'} . ' --password=' . $service->{'options'}{'password'}
 				. ' ' . (join ' ', @finalDumperOptions)
 				. ' --databases ' . $databaseName
 			. ' | sed \'1 i\-- \\
@@ -1442,8 +1449,38 @@ SET SQL_LOG_BIN=0; \\
 		$dumpFilePath = undef;
 	}
 	
-	loggedDebug '--- /service_mysql_dumpDatabase($service, "' . $databaseName . '", $databaseMysqldumpOptions) ---';
+	loggedDebug '--- /service_mysql_dumpDatabase($service, "' . $databaseName . '", "' . $defaultsExtraFile . '", $databaseMysqldumpOptions) ---';
 	return $dumpFilePath;
+}
+
+##
+ # Create a MySQL option file for a MySQL service
+ #
+ # @param string $serviceId	ID of Service to backup
+ #
+ # @return string Absolute path of the option file, undef if creation process failed
+ ##
+sub service_mysql_createOptionFile
+{
+	my $serviceId = $_[0];
+
+	my $service = $services->{$serviceId};
+
+	loggedDebug '--- service_mysql_createOptionFile("' .$serviceId . '") ---';
+
+	my $mysqlOptionFile = File::Spec->catfile($workingBasePath, $serviceId . '.cnf');
+	open(my $fh, '>', $mysqlOptionFile) or print 'Could not open file "' . $mysqlOptionFile . '": ' . $! and exit 79;
+	print $fh <<EOS;
+[client]
+host     = $service->{'options'}{'host'}
+port     = $service->{'options'}{'port'}
+user     = $service->{'options'}{'user'}
+password = $service->{'options'}{'password'}
+EOS
+	close $fh;
+
+	loggedDebug '--- /service_mysql_createOptionFile("' .$serviceId . '") ---';
+	return $mysqlOptionFile;
 }
 
 ## /Service: MySQL ##
