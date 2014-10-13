@@ -713,6 +713,12 @@ sub executeDuplicityPathBackup
 		(defined $storage->{'duplicity'}        ? $storage->{'duplicity'}        : undef)
 	);
 	
+	# Workaround for a possible bug where duplicity ignores the FTP_PASSWORD environment variable for SSH location
+	if ($storage->{'type'} eq STORAGE_TYPE_SSH && defined $ENV{'FTP_PASSWORD'}) {
+		loggedDebug 'FTP_PASSWORD environment variable is set for a SSH storage: adds the --ssh-askpass option';
+		push(@duplicityOptions, '--ssh-askpass');
+	}
+	
 	loggedDebug '[Backup:' . $serviceId . '#' . $sourcePath . ' -> ' . $storageId . ']: Duplicity backup will be ran with following options: ' . join ' ', @duplicityOptions;
 	
 	my $backupResult = execDuplicityAction('incremental', \@duplicityOptions, $sourcePath, $duplicityCompatibleTargetUrl);
