@@ -5,7 +5,7 @@
 #
 # Backups data of file system and various services via Duplicity
 #
-# @version 0.1.4
+# @version 0.1.5
 #
 # @requires duplicity (Encrypted backup using rsync algorithm)
 #                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
