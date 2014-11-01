@@ -5,7 +5,7 @@
 #
 # Backups data of file system and various services via Duplicity
 #
-# @version 0.1.4
+# @version 0.1.5
 #
 # @requires duplicity (Encrypted backup using rsync algorithm)
 #                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
@@ -54,6 +54,88 @@ use YAML::XS; # Debian package "libyaml-libyaml-perl"
 ##### /Modules #####
 
 
+
+##### Output #####
+
+# Since we will maybe deal with STDOUT and STDERR, keep a copy somewhere
+my $original_stdout_fh = \*STDOUT;
+my $original_stderr_fh = \*STDERR;
+
+# Currently used STDOUT and STDERR file handles (defaults to $original_std*_fh):
+my $current_stdout_fh = $original_stdout_fh;
+my $current_stderr_fh = $original_stderr_fh;
+
+# Handle "quietUnlessError" mode
+my $quietUnlessErrorStdoutFh; # File handle to use in "quietUnlessError" mode
+my $stdoutRetainedUntilFirstError; # Will store any output coming from quietUnlessErrorStdoutFh (thus being the STDOUT of "quietUnlessError" mode)
+my $nonQuietUnlessErrorStdoutFh; # Will store the file handle in use prior to enabling "quietUnlessError" mode
+
+# Logger (outputs to current STDOUT by default)
+local $Log::Message::Simple::MSG_FH   = $current_stdout_fh;
+local $Log::Message::Simple::ERROR_FH = $current_stdout_fh;
+local $Log::Message::Simple::DEBUG_FH = $current_stdout_fh;
+
+##### /Output #####
+
+
+
+##### Process #####
+
+my $man = 0;
+my $help = 0;
+my $debugMode = 0;           # Not in debug mode by default
+my $verbose = 0;             # Not verbose by default #TODO: Implement
+my @configurationFiles = (); # List of configuration files to use
+my $config;                  # Final configuration that will be used by the script
+
+GetOptions (
+	'help|?'          => \$help,
+	'man'             => \$man,
+	'debug!'          => \$debugMode,
+	'verbose+'        => \$verbose,
+	'config=s'        => \@configurationFiles
+) or pod2usage(2);
+@configurationFiles = split(/,/, join(',', @configurationFiles));
+
+pod2usage() if $help;
+pod2usage(-verbose => 2) if $man;
+
+# Read main action from @ARGV
+my $mainAction;
+if (@ARGV) {
+	$mainAction = $ARGV[0];
+}
+else {
+	$mainAction = 'backup'; # Perform "backup" action by default
+}
+# /Read main action from @ARGV
+
+
+# Run main action
+
+if ($mainAction eq 'create-config') {
+	actionCreateConfig();
+}
+else {
+	loadConfiguration(@configurationFiles);
+
+	switch ($mainAction) {
+		case 'backup' {
+			actionBackup();
+		}
+		else {
+			print 'Unknown action "' . $mainAction . '"' . "\n";
+			pod2usage(64);
+		}
+	}
+}
+
+# /Run main action
+
+##### /Process #####
+
+
+
 ##### Constants #####
 use constant {
 	SERVICE_TYPE_FILESYSTEM => 'FileSystem',
@@ -69,356 +151,102 @@ use constant {
 
 
 
-##### Arguments #####
-
-my $man = 0;
-my $help = 0;
-my $debugMode = 0;           # Not in debug mode by default
-my $verbose = 0;             # Not verbose by default #TODO: Implement
-my @configurationFiles = (); # List of configuration files to use
-my $createExampleConfig;     # No configuration example file to create by default
-my $mainAction = 'backup';   # Perform "backup" action by default
-
-GetOptions (
-	'help|?'          => \$help,
-	'man'             => \$man,
-	'debug!'          => \$debugMode,
-	'verbose+'        => \$verbose,
-	'config=s'        => \@configurationFiles
-) or pod2usage(2);
-@configurationFiles = split(/,/, join(',', @configurationFiles));
-
-pod2usage() if $help;
-pod2usage(-verbose => 2) if $man;
-
-# Read main action from @ARGV
-if (@ARGV) {
-	$mainAction = $ARGV[0];
-	if ($mainAction eq 'create-config') {
-		if (defined $ARGV[1]) {
-			$createExampleConfig = $ARGV[1];
-		}
-		else {
-			print 'Action "' . $mainAction . '" requires a filepath where to file the configuration file to.' . "\n";
-			pod2usage(64);
-		}
-	}
-}
-# /Read main action from @ARGV
-
-
-# Handle "create-config" action
-if ($mainAction eq 'create-config') {
-	print 'Writing example configuration file to "' . $createExampleConfig . '"...' . "\n";
-	
-	if (-e $createExampleConfig && -f $createExampleConfig && ! -w $createExampleConfig) {
-		print 'Cannot overwrite existing file "' . $createExampleConfig . '"!';
-		exit 73;
-	}
-	my $exampleConfigContainingDir = File::Basename::dirname($createExampleConfig);
-	if (! -e $exampleConfigContainingDir || (-e $exampleConfigContainingDir && -d $exampleConfigContainingDir && ! -w $exampleConfigContainingDir)) {
-		print 'Cannot write to "' . $exampleConfigContainingDir . '"!';
-		exit 73;
-	}
-	
-	open(my $fh, '>', $createExampleConfig) or print 'Could not open file "' . $createExampleConfig . '": ' . $! and exit 74;
-	print $fh <<'EOC';
-# 
-# Backup configuration
-# 
-
----
-backupedServerName: ServerFooBar             # Friendly name of the server
-workingBasePath:    /datas/backup/workingdir # Temporary local storage base path (used when dumping data)
-quietUnlessError:   0                        # Set to 1 to avoid printing script output until one error occurs. Set to 0 to always print script output
-debugMessages:      0                        # Set to 0 to ignore debug messages. Set to 1 to enable
-
-Duplicity: # Duplicity parameters
-  binPath: /usr/bin/duplicity          # Duplicity program filepath
-  archiveDir: /datas/backup/archiveDir # The archive directory path (see Duplicity manpage for "--archive-dir")
-#  tmpDir: <string>                     # (Optional) The directory path to use for Duplicity temporary files instead of the system default (see Duplicity manpage for "--tempdir")
-#  logFile: <string>                    # (Optional) File path where to write specially-formatted versions of output messages (see Duplicity manpage for "--log-file")
-#  gpgPassphrase: <string>              # (Optional) Passphrase to pass to GnuPG (see Duplicity manpage for "ENVIRONMENT VARIABLES")
-#  gpgSignPassphrase: <string>          # (Optional) The passphrase to be used for --sign-key (see Duplicity manpage for "ENVIRONMENT VARIABLES")
-#  excludeDirsContaining: <string>      # (Optional) Exclude directories if filename is present. (see Duplicity manpage for "--exclude-if-present")
-#  globalOptions:                       # (Optional) List of options to always pass to Duplicity (see Duplicity manpage)
-#  - --verbosity 8 # "Info" level of verbosity
-
-Services: # Associative array of what to backup
-  # Syntax:
-  # <string>: # A Service, id-ed by a unique string (see examples below)
-  #   enabled: <integer>                    # Set to 0 so skip this service (= won't be backuped). Set to 1 to enable (= will be backuped)
-  #   type:    <string>                     # Type of the service (possible values: SERVICE_TYPE_*)
-  #   subdir:  <string>                     # On Storage, subdirectory where to store backuped data, should be unique among Services
-  #   options: <Associative array>          # Service-specific options (IP addresses, credentials, etc.)
-  #   duplicityOptions: <Associative array> # (Optional) Options to pass to Duplicity for this Service only (see Duplicity manpage)
-  #                                         # Note: To use "--exclude" option, prepend with "**" wildcard otherwise it would cause "Fatal Error: The file specification ... cannot match any files in the base directory" (because theses options are used for every path)
-  #
-  # "FileSystem" Service options:
-  #   pathsToBackup: <List>                  # List of path that are to be backuped
-  #
-  # "Mysql" Service options:
-  #   host: <string>                         # Hostname of MySQL server
-  #   port: <integer>                        # Port of MySQL server
-  #   user: <string>                         # User to connect with, usually a backup-only user (with SELECT, SHOW DATABASES, SHOW VIEW and LOCK TABLES privileges)
-  #   password: <string>                     # Password of user
-  #   mysqlclientfilepath: <string>          # Path to mysql client
-  #   mysqldumpfilepath: <string>            # Path to mysqldump
-  #   databasesToBackup: <Associative array> # (Optional) Databases to backup (if option is ommitted, will backup every database).
-  #                                            Contains "Database Name / mysqldump options list" couples.
-  #                                            Given options are passed to mysqldump only when dumping the corresponding database.
-  #   databasesToIgnore: <List>              # (Optional) List of databases to ignore/skip. Only used when databasesToBackup is not set.
-  #   mysqldumpOptions: <List>               # (Optional) Options to pass to mysqldump (global within this Service: used for each database)
-  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
-  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
-  #
-  # "Ldap" Service options:
-  #   slapcatFilepath: <string>              # Path to slapcat
-  #   slapcatConfigFilepath: <string>        # If empty (set to undef), slapcat will use it's default value. see slapcat(8) "-f" option
-  #   dnTreesToBackup: <Associative array>   # (Optional) DN trees to backup (see slapcat(8) "-H" option).
-  #                                            Contains "DN / slapcat options list" couples.
-  #                                            DN Can be of form "ldap:///subtree-dn" and/or "ldap:///???(filter)".
-  #                                            Given options are passed to slapcat only for the corresponding DN tree.
-  #   slapcatOptions: <List>                 # (Optional) Options to pass to slapcat (global within this Service: used for each tree)
-  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
-  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
-  #
-
-  localDisk:
-    enabled: 0
-    type:    FileSystem
-    subdir:  theLocalDisk/
-    options:
-      pathsToBackup:
-      - /etc/
-      - /root/
-      - /var/www
-      - /var/lib/redmine
-    duplicityOptions:
-    - --exclude **/root/.secret
-
-  mysql:
-    enabled: 0
-    type:    Mysql
-    subdir:  mysqlServer/
-    options:
-      host:                  localhost
-      port:                  3306
-      user:                  backup
-      password:              some-secure-password
-      mysqlclientfilepath:   /usr/bin/mysql
-      mysqldumpfilepath:     /usr/bin/mysqldump
-      # No "databasesToBackup" config = backup every available database
-      databasesToIgnore:
-      - information_schema
-      - performance_schema
-      mysqldumpOptions:
-      - --insert-ignore # I prefer to have INSERT IGNORE statements
-      - --events # Avoids a warning when backuping `mysql.event` table
-      compressMethod:        /bin/gzip -9 # Compress dump using gzip
-      compressFileExtension: .gz # Adapt file extension accordingly
-    duplicityOptions:
-    - --asynchronous-upload
-
-  mysql-dev:
-    enabled: 0
-    type:    Mysql
-    subdir:  developer-mysql/
-    options:
-      host:                 localhost
-      port:                 3307
-      user:                 backup
-      password:             some-secure-password
-      mysqlclientfilepath:  /usr/bin/mysql
-      mysqldumpfilepath:    /usr/bin/mysqldump
-      databasesToBackup: # Only backup following databases
-        mysql: # No specific option for the "mysql" database
-        webapp:
-        - --single-transaction --quick # "webapp" database mostly contains transactional tables such as InnoDB
-
-  ldap:
-    enabled: 0
-    type:    Ldap
-    subdir:  ldap-directory/
-    options:
-      slapcatFilepath:       /usr/sbin/slapcat
-      slapcatConfigFilepath:  # Let slapcat use it's default value
-      dnTreesToBackup:
-        dc=example,dc=com:
-        - -c
-        ldap:///dc=example,dc=net: # No specific option
-      slapcatOptions:
-      - -v
-      compressMethod:        /bin/gzip -9
-      compressFileExtension: .gz
-    duplicityOptions:
-    - --no-encryption
-
-Storages: # Associative array of where to store backups
-  # Syntax:
-  # <string>: # A Storage, id-ed by a unique string (see examples below)
-  #   enabled: <integer>             # Set to 0 so skip this storage (= nothing will be stored on it). Set to 1 to enable (= will be used to store backups)
-  #   type:    <string>              # Type of the storage (possible values: STORAGE_TYPE_*)
-  #   options: <Associative array>   # Service-specific options (IP addresses, credentials, etc.)
-  #   duplicity: <Associative array> # Duplicity options
-  #     name: <string>                              # (Optional) Set the symbolic name of the backup being operated on. The intent is to use a separate name for each logically distinct backup. (see Duplicity manpage for "--name")
-  #     fullIfOlder: <time string>                  # (Optional) Perform a full backup if an incremental backup is requested, but the latest full backup in the collection is older than the given time (See Duplicity's "TIME FORMATS" manpage section for more information)
-  #     numberOfFullBackupToKeep: <integer>         # (Optional) Delete all backups sets that are older than the count:th last full backup (in other words, keep the last count full backups and associated incremental sets)
-  #     maximumAgeOfFullBackupToKeep: <time string> # (Optional) Delete all backup sets older than the given time. Old backup sets will not be deleted if backup sets newer than time depend on them. (See Duplicity's "TIME FORMATS" manpage section for more information)
-  #     otherOptions: <List>                        # (Optional) Other options to pass to Duplicity for this Storage only (see Duplicity manpage)
-  #
-  # Common options to all Storage type:
-  #   path: <string> # Relative path where to store backups on storage.
-  #                    Notes:
-  #                      For "Ssh" storages it may be preceded by a single slash, '/path', to represent a relative path to the target home directory, or preceded by a double slash, '//path', to represent an absolute filesystem path (cf. Duplicity manpage).
-  #                      This option supports one (for now) variable: "%=backupedServerName%" will be replaced by whatever is set at "backupedServerName" configuration key
-  #
-  # "FileSystem" Service options:
-  #   pathsToBackup: <List>                  # List of path that are to be backuped
-  #
-  # "Mysql" Service options:
-  #   host: <string>                         # Hostname of MySQL server
-  #   port: <integer>                        # Port of MySQL server
-  #
-
-  usbBackup:
-    enabled: 0
-    type:    FileSystem
-    options:
-      path: /mnt/usbBackupDisk
-    duplicity:
-      name:                     localCopy
-      fullIfOlder:              1M # Full every months
-      numberOfFullBackupToKeep: 1
-      otherOptions:
-      - --no-encryption # Never encrypt anything when backuping here
-
-  ftpBackup:
-    enabled: 0
-    type:    Ftp
-    options:
-      host:     ftp-backup.example.com
-      port:     21
-      user:     backuper
-      password: some-secure-password
-      path:     /backups/%=backupedServerName%
-    duplicity:
-      fullIfOlder:                  7D # Full every 7 days
-      numberOfFullBackupToKeep:     3  # Keep 3 full backups
-      maximumAgeOfFullBackupToKeep: 2M # Avoid keeping full backup sets older than 2 months
-      otherOptions:
-      - --num-retries 2 # Attempt twice
-      - --volsize 200   # Volumes of 200 Mb
-
-  secureArchiveNas:
-    enabled: 0
-    type:    Ssh
-    options:
-      host:     archive.example.com
-      port:     22222
-      user:     root # Ugly: don't use that
-      password: some-secure-password
-      path:     //data/bckups/servers/%=backupedServerName%/ # Absolute path
-    duplicity:
-      fullIfOlder:              7D # Full every 10 days
-      numberOfFullBackupToKeep: 10 # Keep 10 full backups
-      otherOptions:
-      - --volsize 10 # Volumes of 10 Mb
-EOC
-	close $fh;
-	
-	print 'Example configuration file written to "' . $createExampleConfig . '"' . "\n";
-	
-	if (chmod 0600, $createExampleConfig) {
-		print 'Permission of file "' . $createExampleConfig . '" set to a secure "0600"' . "\n";
-	}
-	else {
-		print 'WARN: Could not set permission of file "' . $createExampleConfig . '", please change it prior to writing sensitive stuff into it.' . "\n";
-	}
-	
-	exit 0;
-}
-# /Handle "create-config" action
-
-if ($mainAction ne 'backup') {
-	print 'Unknown action "' . $mainAction . '"' . "\n";
-	pod2usage(64);
-}
-
-##### /Arguments #####
-
-
-##### Configuration #####
-
-if (!@configurationFiles) {
-	print 'No configuration file specified. Please do so with --config option';
-	exit 64;
-}
-
-
-my $config; # Start with an empty configuration
-foreach (@configurationFiles) {
-	$loadedConfig = YAML::XS::LoadFile($_);
-	$config = merge $config, $loadedConfig; # Merge loaded configuration with existing one
-}
-
-$backupedServerName = $config->{'backupedServerName'};
-
-$workingBasePath = $config->{'workingBasePath'};
-
-my $duplicity = $config->{'Duplicity'};
-
-my $services = $config->{'Services'};
-my $serviceDumpingData = { # Servce <-> "Dumping data flag" mapping
-	&SERVICE_TYPE_FILESYSTEM => 0,
-	&SERVICE_TYPE_LDAP       => 1,
-	&SERVICE_TYPE_MYSQL      => 1,
-};
-
-my $storages = $config->{'Storages'};
-
-## Output ##
-# Since we will maybe deal with STDOUT and STDERR, keep a copy somewhere
-my $original_stdout_fh = \*STDOUT;
-my $original_stderr_fh = \*STDERR;
-
-# Currently used STDOUT and STDERR file handles (defaults to $original_std*_fh):
-my $current_stdout_fh = $original_stdout_fh;
-my $current_stderr_fh = $original_stderr_fh;
-## /Output ##
-
-## Logger ##
-# Outputs to current STDOUT by default
-local $Log::Message::Simple::MSG_FH   = $current_stdout_fh;
-local $Log::Message::Simple::ERROR_FH = $current_stdout_fh;
-local $Log::Message::Simple::DEBUG_FH = $current_stdout_fh;
-if (defined $config->{'debugMessages'}) {
-	$Log::Message::Simple::log_debug = $config->{'debugMessages'};
-}
-## /Logger ##
-
-## Handle "quietUnlessError" mode ##
-my $quietUnlessErrorStdoutFh; # File handle to use in "quietUnlessError" mode
-my $stdoutRetainedUntilFirstError; # Will store any output coming from quietUnlessErrorStdoutFh (thus being the STDOUT of "quietUnlessError" mode)
-my $nonQuietUnlessErrorStdoutFh; # Will store the file handle in use prior to enabling "quietUnlessError" mode
-if (defined $config->{'quietUnlessError'} && $config->{'quietUnlessError'} == 1) {
-	open($quietUnlessErrorStdoutFh, '>', \$stdoutRetainedUntilFirstError) or die 'Failed to create $quietUnlessErrorStdoutFh file handle for "quietUnlessError" mode'; # This shouldn't fail
-	
-	# Tie output and Logger to newly created $quietUnlessErrorStdoutFh
-	$nonQuietUnlessErrorStdoutFh = select $quietUnlessErrorStdoutFh;
-	$Log::Message::Simple::MSG_FH =   \*$quietUnlessErrorStdoutFh;
-	$Log::Message::Simple::ERROR_FH = \*$quietUnlessErrorStdoutFh;
-	$Log::Message::Simple::DEBUG_FH = \*$quietUnlessErrorStdoutFh;
-	
-	# Post-relation: Script is now quiet because STDOUT and Logger are tied to $quietUnlessErrorStdoutFh which stores output in $stdoutRetainedUntilFirstError instead of going to STDOUT
-}
-## /Handle "quietUnlessError" mode ##
-
-##### /Configuration #####
-
-
-
 ##### Functions #####
+
+## Script-related ##
+
+sub loadConfiguration
+{
+	my (@files) = @_;
+
+	if (!@files) {
+		print 'No configuration file specified. Please do so with --config option';
+		exit 64;
+	}
+
+	$config = undef; # Restart with an empty configuration
+
+	foreach (@files) {
+		$loadedConfig = YAML::XS::LoadFile($_);
+		$config = merge $config, $loadedConfig; # Merge loaded configuration with existing one
+	}
+
+	$backupedServerName = $config->{'backupedServerName'};
+
+	$workingBasePath = $config->{'workingBasePath'};
+
+	$duplicity = $config->{'Duplicity'};
+
+	$services = $config->{'Services'};
+	$serviceDumpingData = { # Servce <-> "Dumping data flag" mapping
+		&SERVICE_TYPE_FILESYSTEM => 0,
+		&SERVICE_TYPE_LDAP       => 1,
+		&SERVICE_TYPE_MYSQL      => 1,
+	};
+
+	$storages = $config->{'Storages'};
+
+	if (defined $config->{'debugMessages'}) {
+		$Log::Message::Simple::log_debug = $config->{'debugMessages'};
+	}
+
+	## Handle "quietUnlessError" mode ##
+	if (defined $config->{'quietUnlessError'} && $config->{'quietUnlessError'} == 1) {
+		open($quietUnlessErrorStdoutFh, '>', \$stdoutRetainedUntilFirstError) or die 'Failed to create $quietUnlessErrorStdoutFh file handle for "quietUnlessError" mode'; # This shouldn't fail
+
+		# Tie output and Logger to newly created $quietUnlessErrorStdoutFh
+		$nonQuietUnlessErrorStdoutFh = select $quietUnlessErrorStdoutFh;
+		$Log::Message::Simple::MSG_FH =   \*$quietUnlessErrorStdoutFh;
+		$Log::Message::Simple::ERROR_FH = \*$quietUnlessErrorStdoutFh;
+		$Log::Message::Simple::DEBUG_FH = \*$quietUnlessErrorStdoutFh;
+
+		# Post-relation: Script is now quiet because STDOUT and Logger are tied to $quietUnlessErrorStdoutFh which stores output in $stdoutRetainedUntilFirstError instead of going to STDOUT
+	}
+	## /Handle "quietUnlessError" mode ##
+}
+
+sub prepareStatuses
+{
+	# Prepare statuses of each service
+	%servicesByTypes = (); # Every enabled service grouped by service type
+	%serviceRuns = ();
+
+	while (my ($currentServiceId, $currentServiceInfos) = each(%$services)) { # For each services
+		if ($currentServiceInfos->{'enabled'} == 1) { # If service is enabled
+			$serviceRuns->{$currentServiceId} = { # Mark it as:
+				ran    => 0,		# Not run (yet)
+				result => undef,	# Unknown result (yet)
+			};
+			if (! defined $servicesByTypes->{$currentServiceInfos->{'type'}}) { # First service of this type to be iterated on
+				$servicesByTypes->{$currentServiceInfos->{'type'}} = [];
+			}
+			push(@{$servicesByTypes->{$currentServiceInfos->{'type'}}}, $currentServiceId);
+		}
+	}
+	# /Prepare statuses of each service
+
+	# Prepare statuses of each storage
+	%storagesToUse = (); # Tells, for a given Service (hash index is Service ID) which Storage must be used and, for each Storage, what path was already used
+
+	foreach my $currentServiceId (keys(%$serviceRuns)) { # For each (enabled) service
+		$storagesToUse->{$currentServiceId} = ();
+		while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
+			if ($currentStorageInfos->{'enabled'} == 1) { # If storage is enabled
+				$storagesToUse->{$currentServiceId}{$currentStorageId} = { # Mark current storage-service pair as:
+					pathUsed => {}, # No path used (yet)
+				};
+			}
+		}
+		if (! defined $storagesToUse->{$currentServiceId}) { # If no storages were added for that service
+			delete $storagesToUse->{$currentServiceId}; # Remove (because it's useless)
+		}
+	}
+	# /Prepare statuses of each storage
+}
+
+## /Script-related ##
+
+
 
 ## Logger ##
 
@@ -712,6 +540,12 @@ sub executeDuplicityPathBackup
 		(defined $service->{'duplicityOptions'} ? $service->{'duplicityOptions'} : undef),
 		(defined $storage->{'duplicity'}        ? $storage->{'duplicity'}        : undef)
 	);
+	
+	# Workaround for a possible bug where duplicity ignores the FTP_PASSWORD environment variable for SSH location
+	if ($storage->{'type'} eq STORAGE_TYPE_SSH && defined $ENV{'FTP_PASSWORD'}) {
+		loggedDebug 'FTP_PASSWORD environment variable is set for a SSH storage: adds the --ssh-askpass option';
+		push(@duplicityOptions, '--ssh-askpass');
+	}
 	
 	loggedDebug '[Backup:' . $serviceId . '#' . $sourcePath . ' -> ' . $storageId . ']: Duplicity backup will be ran with following options: ' . join ' ', @duplicityOptions;
 	
@@ -1495,145 +1329,356 @@ EOS
 
 
 
-##### Process #####
+##### Actions #####
 
-# Prepare statuses of each service
-my %servicesByTypes = (); # Every enabled service grouped by service type
-my %serviceRuns = ();
-
-while (my ($currentServiceId, $currentServiceInfos) = each(%$services)) { # For each services
-	if ($currentServiceInfos->{'enabled'} == 1) { # If service is enabled
-		$serviceRuns->{$currentServiceId} = { # Mark it as:
-			ran    => 0,		# Not run (yet)
-			result => undef,	# Unknown result (yet)
-		};
-		if (! defined $servicesByTypes->{$currentServiceInfos->{'type'}}) { # First service of this type to be iterated on
-			$servicesByTypes->{$currentServiceInfos->{'type'}} = [];
-		}
-		push(@{$servicesByTypes->{$currentServiceInfos->{'type'}}}, $currentServiceId);
-	}
-}
-# /Prepare statuses of each service
-
-
-# Prepare statuses of each storage
-my %storagesToUse = (); # Tells, for a given Service (hash index is Service ID) which Storage must be used and, for each Storage, what path was already used
-
-foreach my $currentServiceId (keys(%$serviceRuns)) { # For each (enabled) service
-	$storagesToUse->{$currentServiceId} = ();
-	while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
-		if ($currentStorageInfos->{'enabled'} == 1) { # If storage is enabled
-			$storagesToUse->{$currentServiceId}{$currentStorageId} = { # Mark current storage-service pair as:
-				pathUsed => {}, # No path used (yet)
-			};
-		}
-	}
-	if (! defined $storagesToUse->{$currentServiceId}) { # If no storages were added for that service
-		delete $storagesToUse->{$currentServiceId}; # Remove (because it's useless)
-	}
-}
-# /Prepare statuses of each storage
-
-
-
-# Start of script
-my $dt = DateTime->now( time_zone => 'UTC' );
-$text = '' . (join ' ', $dt->ymd, $dt->hms, $dt->time_zone->name) . ' - ' . $text;
-
-
-my $actionStartTime = getIso8601DateString();
-loggedMsg 'Backup script for server "' . $config->{'backupedServerName'} . '" started on ' . $actionStartTime;
-
-
-# Test if there is any service or storage enabled
-if(keys(%$serviceRuns) == 0) {
-	loggedError 'Nothing to backup. Make sure "Services" configuration contains at least one enabled service';
-	exit 78;
-}
-if(keys(%$storagesToUse) == 0) {
-	loggedError 'Nowhere to backup to. Make sure "Storages" configuration contains at least one enabled storage.';
-	exit 78;
-}
-# /Test if there is any service or storage enabled
-
-
-
-print "\n";
-loggedMsg 'Will backup ' . keys(%$serviceRuns) . ' service(s) data on ' . keys(%{$storagesToUse->{(keys %$serviceRuns)[0]}}) . ' storages:';
-my $storagesUrl = getStoragesUrl();
-while (my ($currentStorageId, $currentStorageUrl) = each(%$storagesUrl)) {
-	loggedDebug 'Storage "' . $currentStorageId . '" to location: ' . $currentStorageUrl;
-}
-
-
-$currentBackupRunWorkingPath = $workingBasePath;
-
-if (-d $currentBackupRunWorkingPath && ! -w $currentBackupRunWorkingPath) {
-	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not writeable, cannot continue. Please fix permissions.';
-	exit 77;
-}
-if (-d $currentBackupRunWorkingPath && !dirIsEmpty($currentBackupRunWorkingPath)) {
-	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not empty (contains files of previously failed backup?), cannot continue. Please clean directory.';
-	exit 74;
-}
-if (-d $currentBackupRunWorkingPath && int(substr((sprintf '%o', getmod($currentBackupRunWorkingPath)), -1)) != 0) {
-	loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is world-readable which is not safe considering data are to be stored there, cannot continue. Please fix permissions.';
-	exit 77;
-}
-make_path($currentBackupRunWorkingPath, {
-	mode => 0700,
-});
-
-
-
-my $noBackupErrors = undef;
-
-# Backup FS
-runBackupX(SERVICE_TYPE_FILESYSTEM, 'File System', \&backupFs);
-
-# Backup LDAP
-runBackupX(SERVICE_TYPE_LDAP, 'LDAP', \&backupLdap);
-
-# Backup MySQL
-runBackupX(SERVICE_TYPE_MYSQL, 'MySQL', \&backupMysql);
-
-
-
-# Cleaning
-if ($noBackupErrors == 1 || !defined $noBackupErrors) { # If no errors OR if nothing ran (!defined $noBackupErrors)
-	# Remove $currentBackupRunWorkingPath directory
-	loggedMsg '--------------------------------------------------------------------------------';
-	loggedMsg '- Cleaning';
-	loggedMsg '----------';
-	print "\n";
+sub actionCreateConfig
+{
+	my $createExampleConfig;
 	
-	remove_tree($currentBackupRunWorkingPath, {keep_root => 1}); #TODO: Test if dir is really empty instead of relying on $noBackupErrors?
-	if ($? == 0) {
-		loggedMsg 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): OK';
+	if (defined $ARGV[1]) {
+		$createExampleConfig = $ARGV[1];
 	}
 	else {
-		loggedError 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): NOK';
+		print 'Action "create-config" requires a filepath where to file the configuration file to.' . "\n";
+		pod2usage(64);
 	}
-	loggedMsg '--------------------------------------------------------------------------------';
-}
-elsif ($noBackupErrors == 0 || !dirIsEmpty($currentBackupRunWorkingPath)) { # Error occured
-	loggedError 'There are still files in working path ("' . $currentBackupRunWorkingPath . '"): At least one backup went bad, no cleaning will be performed.';
-	while (my ($currentServiceId, $currentServiceRunInfos) = each(%$serviceRuns)) { # For each services
-		loggedDebug 'Service "' . $currentServiceId . '" (type "' . $services->{$currentServiceId}->{'type'} . '") ' . ($currentServiceRunInfos->{'ran'} == 1 ? 'ran: ' . (defined $currentServiceRunInfos->{'result'} && $currentServiceRunInfos->{'result'} == 1 ? 'OK' : 'NOT OK') : 'not ran'); 
+	
+	print 'Writing example configuration file to "' . $createExampleConfig . '"...' . "\n";
+	
+	if (-e $createExampleConfig && -f $createExampleConfig && ! -w $createExampleConfig) {
+		print 'Cannot overwrite existing file "' . $createExampleConfig . '"!';
+		exit 73;
 	}
-	#TODO: Write log file in $currentBackupRunWorkingPath
+	my $exampleConfigContainingDir = File::Basename::dirname($createExampleConfig);
+	if (! -e $exampleConfigContainingDir || (-e $exampleConfigContainingDir && -d $exampleConfigContainingDir && ! -w $exampleConfigContainingDir)) {
+		print 'Cannot write to "' . $exampleConfigContainingDir . '"!';
+		exit 73;
+	}
+	
+	open(my $fh, '>', $createExampleConfig) or print 'Could not open file "' . $createExampleConfig . '": ' . $! and exit 74;
+	print $fh <<'EOC';
+# 
+# Backup configuration
+# 
+
+---
+backupedServerName: ServerFooBar             # Friendly name of the server
+workingBasePath:    /datas/backup/workingdir # Temporary local storage base path (used when dumping data)
+quietUnlessError:   0                        # Set to 1 to avoid printing script output until one error occurs. Set to 0 to always print script output
+debugMessages:      0                        # Set to 0 to ignore debug messages. Set to 1 to enable
+
+Duplicity: # Duplicity parameters
+  binPath: /usr/bin/duplicity          # Duplicity program filepath
+  archiveDir: /datas/backup/archiveDir # The archive directory path (see Duplicity manpage for "--archive-dir")
+#  tmpDir: <string>                     # (Optional) The directory path to use for Duplicity temporary files instead of the system default (see Duplicity manpage for "--tempdir")
+#  logFile: <string>                    # (Optional) File path where to write specially-formatted versions of output messages (see Duplicity manpage for "--log-file")
+#  gpgPassphrase: <string>              # (Optional) Passphrase to pass to GnuPG (see Duplicity manpage for "ENVIRONMENT VARIABLES")
+#  gpgSignPassphrase: <string>          # (Optional) The passphrase to be used for --sign-key (see Duplicity manpage for "ENVIRONMENT VARIABLES")
+#  excludeDirsContaining: <string>      # (Optional) Exclude directories if filename is present. (see Duplicity manpage for "--exclude-if-present")
+#  globalOptions:                       # (Optional) List of options to always pass to Duplicity (see Duplicity manpage)
+#  - --verbosity 8 # "Info" level of verbosity
+
+Services: # Associative array of what to backup
+  # Syntax:
+  # <string>: # A Service, id-ed by a unique string (see examples below)
+  #   enabled: <integer>                    # Set to 0 so skip this service (= won't be backuped). Set to 1 to enable (= will be backuped)
+  #   type:    <string>                     # Type of the service (possible values: SERVICE_TYPE_*)
+  #   subdir:  <string>                     # On Storage, subdirectory where to store backuped data, should be unique among Services
+  #   options: <Associative array>          # Service-specific options (IP addresses, credentials, etc.)
+  #   duplicityOptions: <Associative array> # (Optional) Options to pass to Duplicity for this Service only (see Duplicity manpage)
+  #                                         # Note: To use "--exclude" option, prepend with "**" wildcard otherwise it would cause "Fatal Error: The file specification ... cannot match any files in the base directory" (because theses options are used for every path)
+  #
+  # "FileSystem" Service options:
+  #   pathsToBackup: <List>                  # List of path that are to be backuped
+  #
+  # "Mysql" Service options:
+  #   host: <string>                         # Hostname of MySQL server
+  #   port: <integer>                        # Port of MySQL server
+  #   user: <string>                         # User to connect with, usually a backup-only user (with SELECT, SHOW DATABASES, SHOW VIEW and LOCK TABLES privileges)
+  #   password: <string>                     # Password of user
+  #   mysqlclientfilepath: <string>          # Path to mysql client
+  #   mysqldumpfilepath: <string>            # Path to mysqldump
+  #   databasesToBackup: <Associative array> # (Optional) Databases to backup (if option is ommitted, will backup every database).
+  #                                            Contains "Database Name / mysqldump options list" couples.
+  #                                            Given options are passed to mysqldump only when dumping the corresponding database.
+  #   databasesToIgnore: <List>              # (Optional) List of databases to ignore/skip. Only used when databasesToBackup is not set.
+  #   mysqldumpOptions: <List>               # (Optional) Options to pass to mysqldump (global within this Service: used for each database)
+  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
+  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
+  #
+  # "Ldap" Service options:
+  #   slapcatFilepath: <string>              # Path to slapcat
+  #   slapcatConfigFilepath: <string>        # If empty (set to undef), slapcat will use it's default value. see slapcat(8) "-f" option
+  #   dnTreesToBackup: <Associative array>   # (Optional) DN trees to backup (see slapcat(8) "-H" option).
+  #                                            Contains "DN / slapcat options list" couples.
+  #                                            DN Can be of form "ldap:///subtree-dn" and/or "ldap:///???(filter)".
+  #                                            Given options are passed to slapcat only for the corresponding DN tree.
+  #   slapcatOptions: <List>                 # (Optional) Options to pass to slapcat (global within this Service: used for each tree)
+  #   compressMethod: <string>               # (Optional) Compress command to use on SQL dump
+  #   compressFileExtension: <string>        # (Optional) File extension when compression is enabled
+  #
+
+  localDisk:
+    enabled: 0
+    type:    FileSystem
+    subdir:  theLocalDisk/
+    options:
+      pathsToBackup:
+      - /etc/
+      - /root/
+      - /var/www
+      - /var/lib/redmine
+    duplicityOptions:
+    - --exclude **/root/.secret
+
+  mysql:
+    enabled: 0
+    type:    Mysql
+    subdir:  mysqlServer/
+    options:
+      host:                  localhost
+      port:                  3306
+      user:                  backup
+      password:              some-secure-password
+      mysqlclientfilepath:   /usr/bin/mysql
+      mysqldumpfilepath:     /usr/bin/mysqldump
+      # No "databasesToBackup" config = backup every available database
+      databasesToIgnore:
+      - information_schema
+      - performance_schema
+      mysqldumpOptions:
+      - --insert-ignore # I prefer to have INSERT IGNORE statements
+      - --events # Avoids a warning when backuping `mysql.event` table
+      compressMethod:        /bin/gzip -9 # Compress dump using gzip
+      compressFileExtension: .gz # Adapt file extension accordingly
+    duplicityOptions:
+    - --asynchronous-upload
+
+  mysql-dev:
+    enabled: 0
+    type:    Mysql
+    subdir:  developer-mysql/
+    options:
+      host:                 localhost
+      port:                 3307
+      user:                 backup
+      password:             some-secure-password
+      mysqlclientfilepath:  /usr/bin/mysql
+      mysqldumpfilepath:    /usr/bin/mysqldump
+      databasesToBackup: # Only backup following databases
+        mysql: # No specific option for the "mysql" database
+        webapp:
+        - --single-transaction --quick # "webapp" database mostly contains transactional tables such as InnoDB
+
+  ldap:
+    enabled: 0
+    type:    Ldap
+    subdir:  ldap-directory/
+    options:
+      slapcatFilepath:       /usr/sbin/slapcat
+      slapcatConfigFilepath:  # Let slapcat use it's default value
+      dnTreesToBackup:
+        dc=example,dc=com:
+        - -c
+        ldap:///dc=example,dc=net: # No specific option
+      slapcatOptions:
+      - -v
+      compressMethod:        /bin/gzip -9
+      compressFileExtension: .gz
+    duplicityOptions:
+    - --no-encryption
+
+Storages: # Associative array of where to store backups
+  # Syntax:
+  # <string>: # A Storage, id-ed by a unique string (see examples below)
+  #   enabled: <integer>             # Set to 0 so skip this storage (= nothing will be stored on it). Set to 1 to enable (= will be used to store backups)
+  #   type:    <string>              # Type of the storage (possible values: STORAGE_TYPE_*)
+  #   options: <Associative array>   # Service-specific options (IP addresses, credentials, etc.)
+  #   duplicity: <Associative array> # Duplicity options
+  #     name: <string>                              # (Optional) Set the symbolic name of the backup being operated on. The intent is to use a separate name for each logically distinct backup. (see Duplicity manpage for "--name")
+  #     fullIfOlder: <time string>                  # (Optional) Perform a full backup if an incremental backup is requested, but the latest full backup in the collection is older than the given time (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #     numberOfFullBackupToKeep: <integer>         # (Optional) Delete all backups sets that are older than the count:th last full backup (in other words, keep the last count full backups and associated incremental sets)
+  #     maximumAgeOfFullBackupToKeep: <time string> # (Optional) Delete all backup sets older than the given time. Old backup sets will not be deleted if backup sets newer than time depend on them. (See Duplicity's "TIME FORMATS" manpage section for more information)
+  #     otherOptions: <List>                        # (Optional) Other options to pass to Duplicity for this Storage only (see Duplicity manpage)
+  #
+  # Common options to all Storage type:
+  #   path: <string> # Relative path where to store backups on storage.
+  #                    Notes:
+  #                      For "Ssh" storages it may be preceded by a single slash, '/path', to represent a relative path to the target home directory, or preceded by a double slash, '//path', to represent an absolute filesystem path (cf. Duplicity manpage).
+  #                      This option supports one (for now) variable: "%=backupedServerName%" will be replaced by whatever is set at "backupedServerName" configuration key
+  #
+  # "FileSystem" Service options:
+  #   pathsToBackup: <List>                  # List of path that are to be backuped
+  #
+  # "Mysql" Service options:
+  #   host: <string>                         # Hostname of MySQL server
+  #   port: <integer>                        # Port of MySQL server
+  #
+
+  usbBackup:
+    enabled: 0
+    type:    FileSystem
+    options:
+      path: /mnt/usbBackupDisk
+    duplicity:
+      name:                     localCopy
+      fullIfOlder:              1M # Full every months
+      numberOfFullBackupToKeep: 1
+      otherOptions:
+      - --no-encryption # Never encrypt anything when backuping here
+
+  ftpBackup:
+    enabled: 0
+    type:    Ftp
+    options:
+      host:     ftp-backup.example.com
+      port:     21
+      user:     backuper
+      password: some-secure-password
+      path:     /backups/%=backupedServerName%
+    duplicity:
+      fullIfOlder:                  7D # Full every 7 days
+      numberOfFullBackupToKeep:     3  # Keep 3 full backups
+      maximumAgeOfFullBackupToKeep: 2M # Avoid keeping full backup sets older than 2 months
+      otherOptions:
+      - --num-retries 2 # Attempt twice
+      - --volsize 200   # Volumes of 200 Mb
+
+  secureArchiveNas:
+    enabled: 0
+    type:    Ssh
+    options:
+      host:     archive.example.com
+      port:     22222
+      user:     root # Ugly: don't use that
+      password: some-secure-password
+      path:     //data/bckups/servers/%=backupedServerName%/ # Absolute path
+    duplicity:
+      fullIfOlder:              7D # Full every 10 days
+      numberOfFullBackupToKeep: 10 # Keep 10 full backups
+      otherOptions:
+      - --volsize 10 # Volumes of 10 Mb
+EOC
+	close $fh;
+	
+	print 'Example configuration file written to "' . $createExampleConfig . '"' . "\n";
+	
+	if (chmod 0600, $createExampleConfig) {
+		print 'Permission of file "' . $createExampleConfig . '" set to a secure "0600"' . "\n";
+	}
+	else {
+		print 'WARN: Could not set permission of file "' . $createExampleConfig . '", please change it prior to writing sensitive stuff into it.' . "\n";
+	}
+	
+	exit 0;
 }
-# /Cleaning
 
 
-print "\n";
-print "\n";
+sub actionBackup
+{
+	prepareStatuses();
+	
+	# Start of backup
+	my $dt = DateTime->now( time_zone => 'UTC' );
+	$text = '' . (join ' ', $dt->ymd, $dt->hms, $dt->time_zone->name) . ' - ' . $text;
+	
+	
+	my $actionStartTime = getIso8601DateString();
+	loggedMsg 'Backup action for server "' . $config->{'backupedServerName'} . '" started on ' . $actionStartTime;
+	
+	
+	# Test if there is any service or storage enabled
+	if(keys(%$serviceRuns) == 0) {
+		loggedError 'Nothing to backup. Make sure "Services" configuration contains at least one enabled service';
+		exit 78;
+	}
+	if(keys(%$storagesToUse) == 0) {
+		loggedError 'Nowhere to backup to. Make sure "Storages" configuration contains at least one enabled storage.';
+		exit 78;
+	}
+	# /Test if there is any service or storage enabled
+	
+	
+	
+	print "\n";
+	loggedMsg 'Will backup ' . keys(%$serviceRuns) . ' service(s) data on ' . keys(%{$storagesToUse->{(keys %$serviceRuns)[0]}}) . ' storages:';
+	my $storagesUrl = getStoragesUrl();
+	while (my ($currentStorageId, $currentStorageUrl) = each(%$storagesUrl)) {
+		loggedDebug 'Storage "' . $currentStorageId . '" to location: ' . $currentStorageUrl;
+	}
+	
+	
+	$currentBackupRunWorkingPath = $workingBasePath;
+	
+	if (-d $currentBackupRunWorkingPath && ! -w $currentBackupRunWorkingPath) {
+		loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not writeable, cannot continue. Please fix permissions.';
+		exit 77;
+	}
+	if (-d $currentBackupRunWorkingPath && !dirIsEmpty($currentBackupRunWorkingPath)) {
+		loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is not empty (contains files of previously failed backup?), cannot continue. Please clean directory.';
+		exit 74;
+	}
+	if (-d $currentBackupRunWorkingPath && int(substr((sprintf '%o', getmod($currentBackupRunWorkingPath)), -1)) != 0) {
+		loggedError 'Working base path "' . $currentBackupRunWorkingPath . '" is world-readable which is not safe considering data are to be stored there, cannot continue. Please fix permissions.';
+		exit 77;
+	}
+	make_path($currentBackupRunWorkingPath, {
+		mode => 0700,
+	});
+	
+	
+	
+	my $noBackupErrors = undef;
+	
+	# Backup FS
+	runBackupX(SERVICE_TYPE_FILESYSTEM, 'File System', \&backupFs);
+	
+	# Backup LDAP
+	runBackupX(SERVICE_TYPE_LDAP, 'LDAP', \&backupLdap);
+	
+	# Backup MySQL
+	runBackupX(SERVICE_TYPE_MYSQL, 'MySQL', \&backupMysql);
+	
+	
+	
+	# Cleaning
+	if ($noBackupErrors == 1 || !defined $noBackupErrors) { # If no errors OR if nothing ran (!defined $noBackupErrors)
+		# Remove $currentBackupRunWorkingPath directory
+		loggedMsg '--------------------------------------------------------------------------------';
+		loggedMsg '- Cleaning';
+		loggedMsg '----------';
+		print "\n";
+		
+		remove_tree($currentBackupRunWorkingPath, {keep_root => 1}); #TODO: Test if dir is really empty instead of relying on $noBackupErrors?
+		if ($? == 0) {
+			loggedMsg 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): OK';
+		}
+		else {
+			loggedError 'Deleting temporary working path ("' . $currentBackupRunWorkingPath . '"): NOK';
+		}
+		loggedMsg '--------------------------------------------------------------------------------';
+	}
+	elsif ($noBackupErrors == 0 || !dirIsEmpty($currentBackupRunWorkingPath)) { # Error occured
+		loggedError 'There are still files in working path ("' . $currentBackupRunWorkingPath . '"): At least one backup went bad, no cleaning will be performed.';
+		while (my ($currentServiceId, $currentServiceRunInfos) = each(%$serviceRuns)) { # For each services
+			loggedDebug 'Service "' . $currentServiceId . '" (type "' . $services->{$currentServiceId}->{'type'} . '") ' . ($currentServiceRunInfos->{'ran'} == 1 ? 'ran: ' . (defined $currentServiceRunInfos->{'result'} && $currentServiceRunInfos->{'result'} == 1 ? 'OK' : 'NOT OK') : 'not ran'); 
+		}
+		#TODO: Write log file in $currentBackupRunWorkingPath
+	}
+	# /Cleaning
+	
+	
+	print "\n";
+	print "\n";
+	
+	# End of backup
+	my $actionEndTime = getIso8601DateString();
+	$actionDuration = Date::Parse::str2time($actionEndTime) -  Date::Parse::str2time($actionStartTime);
+	
+	loggedMsg 'Backup action for server "' . $config->{'backupedServerName'} . '" ended on ' . $actionEndTime . ' (' . $actionDuration . ' seconds)';
+}
 
-# End of script
-my $actionEndTime = getIso8601DateString();
-$actionDuration = Date::Parse::str2time($actionEndTime) -  Date::Parse::str2time($actionStartTime);
-
-loggedMsg 'Backup script for server "' . $config->{'backupedServerName'} . '" ended on ' . $actionEndTime . ' (' . $actionDuration . ' seconds)';
+##### /Actions #####
 
 __END__
 
