@@ -1579,10 +1579,6 @@ sub actionBackup
 	prepareStatuses();
 	
 	# Start of backup
-	my $dt = DateTime->now( time_zone => 'UTC' );
-	$text = '' . (join ' ', $dt->ymd, $dt->hms, $dt->time_zone->name) . ' - ' . $text;
-	
-	
 	my $actionStartTime = getIso8601DateString();
 	loggedMsg 'Backup action for server "' . $config->{'backupedServerName'} . '" started on ' . $actionStartTime;
 	
