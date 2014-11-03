@@ -123,6 +123,9 @@ else {
 		case 'backup' {
 			actionBackup();
 		}
+		case 'list-storages-locations' {
+			actionListStoragesLocations();
+		}
 		else {
 			print 'Unknown action "' . $mainAction . '"' . "\n";
 			pod2usage(64);
@@ -1665,6 +1668,22 @@ sub actionBackup
 	loggedMsg 'Backup action for server "' . $config->{'backupedServerName'} . '" ended on ' . $actionEndTime . ' (' . $actionDuration . ' seconds)';
 }
 
+sub actionListStoragesLocations
+{
+	print 'Storages:' . "\n";
+	while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
+		my @duplicityTargetUrl = getDuplicityStorageUrl($currentStorageInfos);
+
+		print '* ' . $currentStorageId . ' (type: ' . $currentStorageInfos->{'type'} . ') [' . ( $currentStorageInfos->{'enabled'} == 1 ? 'enabled' : 'disabled' ) . ']' . "\n";
+		print '  - Duplicity target URL (and needed variables):' . "\n";
+		print '    ' . @duplicityTargetUrl[0] . "\n";
+		while (my ($currentEnvKey, $currentEnvVal) = each(%{@duplicityTargetUrl[1]})) # For each returned environment variable
+		{
+			print '    ' . $currentEnvKey . '=' . $currentEnvVal . "\n";
+		}
+	}
+}
+
 ##### /Actions #####
 
 __END__
@@ -1704,7 +1723,7 @@ Write a configuration example to F<file> and quits.
 
 =item B<list-storages-locations>
 
-List every activated storage locations (useful when directly using duplicity). B<(Not implemented)>
+List every defined storage locations (useful when directly using duplicity).
 
 =item B<list-files> F<location>
 
