@@ -500,32 +500,7 @@ sub executeDuplicityPathBackup
 
 	my $service = $services->{$serviceId};
 
-	# Computes the Storage subdir path:
-	my $subdirOnStorage; # Will contains the subdir path to use on Storage
-
-	if (defined $serviceDumpingData->{$service->{'type'}} && int($serviceDumpingData->{$service->{'type'}}) == 1) { # Service dumps it's data
-		# Will compute the part of $sourcePath that differs from $workingBasePath/$service->{'subdir'}
-		# in order to be a unique subdirectory (per database/dn_tree)
-		# avoids "Fatal Error: Backup source directory has changed" from Duplicity
-		my $commonPath = compath('/', @{[
-			$sourcePath,
-			File::Spec->catdir($workingBasePath, $service->{'subdir'})
-		]});
-
-		my $dumpSubdir = substr $sourcePath, length $commonPath; # Can use substr because both $sourcePath and $commonPath are absolute path
-
-		loggedDebug 'It is a dumping Service, will append "' . $dumpSubdir . '" as a subdirectory to target URL';
-		$subdirOnStorage = $dumpSubdir; # Append computed subdir when backuping a service that dumps it's data
-	}
-	else { # Service don't dumps it's data
-		loggedDebug 'It is a no dumping Service, will append "' . $sourcePath . '" as a subdirectory to target URL';
-		$subdirOnStorage = $sourcePath; # Append given path otherwise
-	}
-
-	if (defined $service->{'subdir'}) { # Append Service's subdir (if set)
-		$subdirOnStorage = File::Spec->catdir($service->{'subdir'}, $subdirOnStorage);
-	}
-	# /Computes the Storage subdir path:
+	my $subdirOnStorage = getServiceSubdirOnStorage($service, $sourcePath); # Get the subdir path to use on Storage
 
 	# Constructs the target URL:
 	@duplicityTargetUrl = getDuplicityStorageUrl($storage, $subdirOnStorage); # [0] stores the URL, [1] potentially stores a list of environment variables
@@ -614,6 +589,49 @@ sub executeDuplicityPathBackup
 	loggedDebug '--- /executeDuplicityPathBackup("' . $serviceId . '", "' . $sourcePath . '", ' . $storageId . ', $storage) ---';
 
 	return $return;
+}
+
+##
+ # Determines and return the Storage-side subdirectory path for a Service.
+ #
+ # Computes actual relative path where Service's file will be stored on the Storages.
+ #
+ # @param hash $service			Infos on Service to backup
+ # @param string $sourcePath	Path of directory to backup
+ #
+ # @return string The subdir path to use on Storage
+ ##
+sub getServiceSubdirOnStorage
+{
+	my ($service, $sourcePath) = @_;
+
+	loggedDebug '--- getServiceSubdirOnStorage("$service", "' . $sourcePath . '") ---';
+
+	my $subdirOnStorage; # Will contain the subdir path to use on Storage
+
+	if (defined $serviceDumpingData->{$service->{'type'}} && int($serviceDumpingData->{$service->{'type'}}) == 1) { # Service dumps it's data
+		loggedDebug 'It is a dumping Service';
+		# Will compute the part of $sourcePath that differs from $workingBasePath/$service->{'subdir'}
+		# in order to be a unique subdirectory (per database/dn_tree)
+		# avoids "Fatal Error: Backup source directory has changed" from Duplicity
+		my $commonPath = compath('/', @{[
+			$sourcePath,
+			File::Spec->catdir($workingBasePath, $service->{'subdir'})
+		]});
+		$subdirOnStorage = substr $sourcePath, length $commonPath; # Can use substr because both $sourcePath and $commonPath are absolute path
+	}
+	else { # Service don't dumps it's data
+		loggedDebug 'It is a no dumping Service';
+		$subdirOnStorage = $sourcePath; # Append given path otherwise
+	}
+
+	if (defined $service->{'subdir'}) { # Append Service's subdir (if set)
+		$subdirOnStorage = File::Spec->catdir($service->{'subdir'}, $subdirOnStorage);
+	}
+
+	loggedDebug 'Will use "' . $subdirOnStorage . '" as a subdirectory for Storage';
+
+	return $subdirOnStorage;
 }
 
 ##
