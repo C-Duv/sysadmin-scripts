@@ -1088,11 +1088,12 @@ sub service_ldap_dumpDnTree
 	loggedDebug '--- service_ldap_dumpDnTree($service, "' . $dnTree . '", $treeSlapcatOptions) ---';
 
 	# Create the service workingPath:
-	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $dnTree);
+	my $dnTreeForPath = $dnTree =~ s/[:\/]/_/gr; # Replaces ":" and "/" by "_"
+	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $dnTreeForPath);
 	make_path($pathWhereToDump);
 
 	# Computes the file name :
-	my $dumpFileName = $dnTree . '.ldif';
+	my $dumpFileName = $dnTreeForPath . '.ldif';
 	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
 		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
 	}
