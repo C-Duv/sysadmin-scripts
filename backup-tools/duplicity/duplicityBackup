@@ -1087,17 +1087,7 @@ sub service_ldap_dumpDnTree
 
 	loggedDebug '--- service_ldap_dumpDnTree($service, "' . $dnTree . '", $treeSlapcatOptions) ---';
 
-	# Create the service workingPath:
-	my $dnTreeForPath = $dnTree =~ s/[:\/]/_/gr; # Replaces ":" and "/" by "_"
-	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $dnTreeForPath);
-	make_path($pathWhereToDump);
-
-	# Computes the file name :
-	my $dumpFileName = $dnTreeForPath . '.ldif';
-	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
-		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
-	}
-	my $dumpFilePath = File::Spec->catfile($pathWhereToDump, $dumpFileName);
+	my $dumpFilePath = service_ldap_getDumpFilepath($service, $dnTree);
 
 	# Default slapcat options
 	my @finalDumperOptions = (
@@ -1145,6 +1135,49 @@ sub service_ldap_dumpDnTree
 
 	return $dumpFilePath;
 }
+
+##
+ # Returns a version of a DN tree that can be used in paths
+ #
+ # Replaces ":" and "/" by "_"
+ #
+ # @param string $dnTree			DN of tree to dump
+ #
+ # @return string	Cleaned version of $dnTree
+ ##
+sub service_ldap_cleanDnForPath
+{
+	my $dnTree = $_[0];
+	$dnTree =~ s/[:\/]/_/g;
+	return $dnTree
+}
+
+##
+ # Determines and returns the filepath where a DN tree have to be dumped
+ #
+ # @param hash $service				Infos on LDAP service to backup
+ # @param string $dnTree			DN of tree to dump
+ #
+ # @return string	Absolute path where the tree dump have to be placed
+ ##
+sub service_ldap_getDumpFilepath
+{
+	my ($service, $dnTree) = @_;
+
+	my $dnTreeForPath = service_ldap_cleanDnForPath($dnTree);
+	my $dumpDirPath = File::Spec->catdir($workingBasePath, $service->{'subdir'}, $dnTreeForPath);
+	make_path($dumpDirPath);
+
+	# Computes the file name :
+	my $dumpFileName = $dnTreeForPath . '.ldif';
+	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
+		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
+	}
+	my $dumpFilePath = File::Spec->catfile($dumpDirPath, $dumpFileName);
+
+	return $dumpFilePath;
+}
+
 
 ## /Service: LDAP ##
 
