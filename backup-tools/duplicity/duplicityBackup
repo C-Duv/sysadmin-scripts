@@ -1299,16 +1299,7 @@ sub service_mysql_dumpDatabase
 
 	loggedDebug '--- service_mysql_dumpDatabase($service, "' . $databaseName . '", "' . $defaultsExtraFile . '", $databaseMysqldumpOptions) ---';
 
-	# Create the service workingPath:
-	my $pathWhereToDump = File::Spec->catdir($currentBackupRunWorkingPath, $service->{'subdir'}, $databaseName);
-	make_path($pathWhereToDump);
-
-	# Computes the file name :
-	my $dumpFileName = $databaseName . '.sql';
-	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
-		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
-	}
-	my $dumpFilePath = File::Spec->catfile($pathWhereToDump, $dumpFileName);
+	my $dumpFilePath = service_mysql_getDumpFilepath($service, $databaseName);
 
 	# Default mysqldump options (MySQL option file must be first)
 	my @finalDumperOptions = (
@@ -1366,6 +1357,31 @@ SET SQL_LOG_BIN=0; \\
 	}
 
 	loggedDebug '--- /service_mysql_dumpDatabase($service, "' . $databaseName . '", "' . $defaultsExtraFile . '", $databaseMysqldumpOptions) ---';
+	return $dumpFilePath;
+}
+
+##
+ # Determines and returns the filepath where a MySQL database have to be dumped
+ #
+ # @param hash $service				Infos on MySQL service to backup
+ # @param string $databaseName		MySQL database name
+ #
+ # @return string	Absolute path where the database dump have to be placed
+ ##
+sub service_mysql_getDumpFilepath
+{
+	my ($service, $databaseName) = @_;
+
+	my $dumpDirPath = File::Spec->catdir($workingBasePath, $service->{'subdir'}, $databaseName);
+	make_path($dumpDirPath);
+
+	# Computes the file name :
+	my $dumpFileName = $databaseName . '.sql';
+	if (defined $service->{'options'}{'compressMethod'} && defined $service->{'options'}{'compressFileExtension'}) {
+		$dumpFileName .= $service->{'options'}{'compressFileExtension'};
+	}
+	my $dumpFilePath = File::Spec->catfile($dumpDirPath, $dumpFileName);
+
 	return $dumpFilePath;
 }
 
