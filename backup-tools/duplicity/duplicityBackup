@@ -1061,11 +1061,13 @@ sub backupLdap
 		return 0;
 	}
 
-	# Looping on "dnTreesToBackup" #
+	my @dnTreesToBackup = service_ldap_getDnTreesToDump($service);
+
+	# Looping on "@dnTreesToBackup" #
 	my $noBackupError = 1;
-	while (my ($currentDnTree, $currentDnTreeOptionList) = each (%{$service->{'options'}{'dnTreesToBackup'}})) {
-		loggedDebug 'Will dump DN "' . $currentDnTree . '" with options ' . (join ' ', @{ $currentDnTreeOptionList });
-		my $currentDumpFilepath = service_ldap_dumpDnTree($service, $currentDnTree, $currentDnTreeOptionList);
+	foreach (@dnTreesToBackup) {
+		loggedDebug 'Will dump DN "' . $_->[0] . '" with options ' . (join ' ', @{ $_->[1] });
+		my $currentDumpFilepath = service_ldap_dumpDnTree($service, $_->[0], $_->[1]);
 
 		if (defined $currentDumpFilepath) {
 			my $currentDumpFilepathContainingDir = File::Basename::dirname($currentDumpFilepath);
@@ -1084,11 +1086,35 @@ sub backupLdap
 			loggedError 'Error occured when dumping LDAP "' . $currentDnTree . '" : service_ldap_dumpDnTree() returned "undef"';
 		}
 	}
-	# /Looping on "dnTreesToBackup" #
+	# /Looping on "@dnTreesToBackup" #
 
 	loggedDebug '--- /backupLdap("' .$serviceId . '") ---';
 
 	return $noBackupError;
+}
+
+##
+ # Determines and returns the list of DN trees to dump with corresponding slapcat options
+ #
+ # @param hash $service				Infos on LDAP service to backup
+ #
+ # @return array	Couples of the DN of each Tree to dump and the slapcat options to use with
+ ##
+sub service_ldap_getDnTreesToDump
+{
+	my $service = $_[0];
+
+	loggedDebug '--- service_ldap_getDnTreesToDump($service) ---';
+
+	my @dnTreesToDump = ();
+
+	while (my ($currentDnTree, $currentDnTreeOptionList) = each (%{$service->{'options'}{'dnTreesToBackup'}})) {
+		push(@dnTreesToDump, [$currentDnTree, $currentDnTreeOptionList]) unless $currentDnTree eq ''
+	}
+
+	loggedDebug '--- /service_ldap_getDnTreesToDump($service) ---';
+
+	return @dnTreesToDump;
 }
 
 ##
