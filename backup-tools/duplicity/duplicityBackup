@@ -1005,17 +1005,36 @@ sub backupFs
 	my $noBackupError = 1;
 
 	loggedDebug 'List of path to backup';
-	foreach (@{ $service->{'options'}{'pathsToBackup'} }) { # For each path to backup #TODO: Move to a "pathsToBackup" hash (instead of an array) allowing to pass specific duplicity options for this path (as in MySQL and LDAP services)
-		if ($_ ne '') {
-			if (backupPath($serviceId, $_) != 2) { # backupPath() failed to backup
-				$noBackupError = 0;
-			}
+	foreach (service_fs_getPathsToBackup($service)) { # For each path to backup
+		loggedDebug 'Will attempt to backup path "' . $_ . '"';
+		if (backupPath($serviceId, $_) != 2) { # backupPath() failed to backup
+			$noBackupError = 0;
 		}
 	}
 
 	loggedDebug '--- /backupFs("' .$serviceId . '") ---';
 
 	return $noBackupError;
+}
+
+##
+ # Determines and returns the list of path to backup for a given FS service
+ #
+ # @param hash $service				Infos on FS service to backup
+ #
+ # @return array	The paths to backup
+ ##
+sub service_fs_getPathsToBackup
+{
+	my $service = $_[0];
+
+	loggedDebug '--- service_fs_getPathsToBackup($service) ---';
+
+	@paths = grep { $_ ne '' } @{ $service->{'options'}{'pathsToBackup'} };
+
+	loggedDebug '--- /service_fs_getPathsToBackup($service) ---';
+
+	return @paths;
 }
 ## /Service: File System ##
 
