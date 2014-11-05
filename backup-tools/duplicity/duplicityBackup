@@ -1207,27 +1207,7 @@ sub backupMysql
 	# Create the MySQL option file
 	my $mysqlOptionFile = service_mysql_createOptionFile($serviceId);
 
-	my @databasesToDump = (); # Will contains couples of the name of each database to dump and the mysqldump options to use for it
-
-	# Populate @databasesToDump with stuff from config
-	if (defined $service->{'options'}{'databasesToBackup'}) { # Database list to backup is given
-		while (my ($currentDatabaseName, $currentDatabaseOptionList) = each (%{$service->{'options'}{'databasesToBackup'}})) {
-			push(@databasesToDump, [$currentDatabaseName, $currentDatabaseOptionList]) unless $currentDatabaseName eq ''
-		}
-	}
-	else { # Backup every database
-		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --defaults-extra-file="' . $mysqlOptionFile . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
-		while (<FH>) {
-			my $dbName = (substr $_, 0, -1);
-			if (defined $service->{'options'}{'databasesToIgnore'} && $dbName ~~ $service->{'options'}{'databasesToIgnore'}) { # A list of databases to ignore was given and $dbName is in it
-				loggedDebug 'Database "' . $dbName . '" is listed in "databasesToIgnore" options: will not add it to @databasesToDump';
-			}
-			else {
-				push(@databasesToDump, [$dbName, []]);
-			}
-		}
-		close FH;
-	}
+	my @databasesToDump = service_mysql_getDatabasesToDump($service, $mysqlOptionFile); # Will contains couples of the name of each database to dump and the mysqldump options to use for it
 
 	# Looping on populated @databasesToDump #
 	my $noBackupError = 1;
@@ -1260,6 +1240,47 @@ sub backupMysql
 	loggedDebug '--- /backupMysql("' .$serviceId . '") ---';
 
 	return $noBackupError;
+}
+
+##
+ # Determines and returns the list of databases to dump with corresponding mysqldump options
+ #
+ # @param hash $service				Infos on MySQL service to backup
+ # @param string $mysqlOptionFile	Path of a MySQL option file to use
+ #
+ # @return array	Couples of the name of each database to dump and the mysqldump options to use for it
+ ##
+sub service_mysql_getDatabasesToDump
+{
+	my ($service, $mysqlOptionFile) = @_;
+
+	loggedDebug '--- service_mysql_getDatabasesToDump($service, $mysqlOptionFile) ---';
+
+	my @databasesToDump = ();
+
+	# Populate @databasesToDump with stuff from config
+	if (defined $service->{'options'}{'databasesToBackup'}) { # Database list to backup is given
+		while (my ($currentDatabaseName, $currentDatabaseOptionList) = each (%{$service->{'options'}{'databasesToBackup'}})) {
+			push(@databasesToDump, [$currentDatabaseName, $currentDatabaseOptionList]) unless $currentDatabaseName eq ''
+		}
+	}
+	else { # Backup every database
+		open FH, $service->{'options'}{'mysqlclientfilepath'} . ' --defaults-extra-file="' . $mysqlOptionFile . '" --skip-auto-rehash --batch --execute="SHOW DATABASES;" |  tail -n +2 |' or die 'Failed to fetch databases list on server ' . $service->{'options'}{'host'} . ':' . $service->{'options'}{'port'};
+		while (<FH>) {
+			my $dbName = (substr $_, 0, -1);
+			if (defined $service->{'options'}{'databasesToIgnore'} && $dbName ~~ $service->{'options'}{'databasesToIgnore'}) { # A list of databases to ignore was given and $dbName is in it
+				loggedDebug 'Database "' . $dbName . '" is listed in "databasesToIgnore" options: will not add it to @databasesToDump';
+			}
+			else {
+				push(@databasesToDump, [$dbName, []]);
+			}
+		}
+		close FH;
+	}
+
+	loggedDebug '--- /service_mysql_getDatabasesToDump($service, $mysqlOptionFile) ---';
+
+	return @databasesToDump;
 }
 
 ##
