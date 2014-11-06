@@ -5,7 +5,7 @@
 #
 # Backups data of file system and various services via Duplicity
 #
-# @version 0.1.6
+# @version 0.1.7
 #
 # @requires duplicity (Encrypted backup using rsync algorithm)
 #                     Suggested: paramiko (SSH2 connection), gio (GObject, Debian package "python-gobject-2"), Ncftp (FTP access, Debian package "ncftp")
@@ -245,6 +245,49 @@ sub prepareStatuses
 		}
 	}
 	# /Prepare statuses of each storage
+}
+##
+ # Returns the paths that are backuped by Duplicity for a Service
+ #
+ # When Duplicity backups a Service it reads the file from a path (eg. the
+ # "source_directory" parameter), this path varies depending on the Service:
+ # * For non-dumping services (eg. FS): the paths in the config are the one
+ #   Duplicity will use (as is).
+ # * For dumping services (LDAP and MySQL), path are constructed according to
+ #   specified DN/databases.
+ #
+ # @param hash $service				Infos on the service
+ # @param string $serviceId			ID of the service
+ #
+ # @return array Absolute paths where Duplicity will look for files to backup
+ ##
+sub getBackupPathsForOneService
+{
+	my ($service, $serviceId) = @_;
+
+	my @backupPaths = ();
+
+	if ($service->{'type'} eq SERVICE_TYPE_FILESYSTEM) {
+		foreach (service_fs_getPathsToBackup($service)) {
+			push(@backupPaths, $_);
+		}
+	}
+	elsif ($service->{'type'} eq SERVICE_TYPE_LDAP) {
+		foreach (service_ldap_getDnTreesToDump($service)) {
+			my $ldapFilepath = service_ldap_getDumpFilepath($service, $_->[0]);
+			push(@backupPaths, File::Basename::dirname($ldapFilepath));
+		}
+	}
+	elsif ($service->{'type'} eq SERVICE_TYPE_MYSQL) {
+		my $mysqlOptionFile = service_mysql_createOptionFile($serviceId);
+		foreach (service_mysql_getDatabasesToDump($service, $mysqlOptionFile)) {
+			my $mysqlFilepath = service_mysql_getDumpFilepath($service, $_->[0]);
+			push(@backupPaths, File::Basename::dirname($mysqlFilepath));
+		}
+		unlink $mysqlOptionFile;
+	}
+
+	return @backupPaths;
 }
 
 ## /Script-related ##
@@ -1804,16 +1847,27 @@ sub actionBackup
 
 sub actionListStoragesLocations
 {
-	print 'Storages:' . "\n";
+	print 'List of Duplicity target URLs (and needed environment variables) per Service, per Storage.' . "\n";
 	while (my ($currentStorageId, $currentStorageInfos) = each(%$storages)) { # For each storages
-		my @duplicityTargetUrl = getDuplicityStorageUrl($currentStorageInfos);
 
-		print '* ' . $currentStorageId . ' (type: ' . $currentStorageInfos->{'type'} . ') [' . ( $currentStorageInfos->{'enabled'} == 1 ? 'enabled' : 'disabled' ) . ']' . "\n";
-		print '  - Duplicity target URL (and needed variables):' . "\n";
-		print '    ' . @duplicityTargetUrl[0] . "\n";
-		while (my ($currentEnvKey, $currentEnvVal) = each(%{@duplicityTargetUrl[1]})) # For each returned environment variable
-		{
-			print '    ' . $currentEnvKey . '=' . $currentEnvVal . "\n";
+		print '* "' . $currentStorageId . '" (' . $currentStorageInfos->{'type'} . ' storage) [' . ( $currentStorageInfos->{'enabled'} == 1 ? 'enabled' : 'disabled' ) . ']' . "\n";
+
+		while (my ($currentServiceId, $currentServiceInfos) = each(%$services)) { # For each services
+			print '  - "' . $currentServiceId . '" (' . $currentServiceInfos->{'type'} . 'service) [' . ( $currentServiceInfos->{'enabled'} == 1 ? 'enabled' : 'disabled' ) . ']' . "\n";
+
+			my @currentServiceBackupedPaths = getBackupPathsForOneService($currentServiceInfos, $currentServiceId); # Get the backup paths for that Service
+			foreach (@currentServiceBackupedPaths) { # For each backup path
+				# Get the full Duplicity-ready target URL version for that storage
+				my @duplicityTargetUrl = getDuplicityStorageUrl($currentStorageInfos, getServiceSubdirOnStorage($currentServiceInfos, $_));
+
+				print '    . ' . @duplicityTargetUrl[0] . "\n";
+
+				# Display returned environment variables:
+				while (my ($currentEnvKey, $currentEnvVal) = each(%{@duplicityTargetUrl[1]}))
+				{
+					print '      ' . $currentEnvKey . '=' . $currentEnvVal . "\n";
+				}
+			}
 		}
 	}
 }
