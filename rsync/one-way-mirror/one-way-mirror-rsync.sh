@@ -130,7 +130,7 @@ fi
 ## Rsync command creation ##
 includeFromPart=""
 if [ -n "$rsyncIncludeList" ]; then
-    includeFromPart="--include-from=\"$rsyncIncludeList\""
+    includeFromPart=(--include-from="$rsyncIncludeList")
 fi
 
 rsyncRshOtherOptionsPart=()
@@ -192,7 +192,7 @@ rsyncCommand=($rsyncExecutable \
     $dryRun \
     $verbose \
     --log-file="$rsyncLogFilepath" \
-    $includeFromPart \
+    "${includeFromPart[@]}" \
     --recursive --links --times --group --owner --devices --specials --compress \
     --delete --delete-before --delete-excluded \
     "${otherRsyncOptionsPart[@]}" \
