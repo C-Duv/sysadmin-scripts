@@ -37,12 +37,8 @@ Configuration file example:
     destinationSshPort="22"
     destinationDirpath="/mnt/replication"
     
-    dryRun=""
-    verbose=""
-    
-    # Uncomment the following to do either a dryRun, a verbose run or both:
-    #dryRun=" --dry-run"
-    #verbose=" --verbose"
+    dryRun=0
+    verbose=0
 
 Include list example:
     

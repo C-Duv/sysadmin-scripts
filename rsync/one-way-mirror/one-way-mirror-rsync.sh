@@ -64,12 +64,11 @@ destinationHost="192.168.0.8"
 destinationSshPort="22"
 destinationDirpath="/mnt/replication"
 
-dryRun=""
-verbose=""
+# Change value to 1 to perform a dry run (default: 0)
+dryRun=0
 
-# Uncomment the following to do either a dryRun, a verbose run or both:
-#dryRun=" --dry-run"
-#verbose=" --verbose"
+# Sets verbosity level (default: 0)
+verbose=0
 EOT
     chmod 0600 "$CONFIG_FILE"
     echo "Config file created in \"$CONFIG_FILE\". Please adjust and restart script."
@@ -181,16 +180,22 @@ else
 fi
 
 otherRsyncOptionsPart=()
+if [ $dryRun -eq 1 ]; then
+    otherRsyncOptionsPart+=(--dry-run)
+fi
+if [ $verbose -ge 1 ]; then
+    for (( i=1; i<=$verbose; i++ )); do
+        otherRsyncOptionsPart+=(--verbose)
+    done
+fi
 if [ -n "$rsyncOtherOptions" ]; then
-    otherRsyncOptionsPart=($rsyncOtherOptions)
+    otherRsyncOptionsPart+=($rsyncOtherOptions)
 fi
 ## /Rsync command creation ##
 
 
 ## Run rsync ##
 rsyncCommand=($rsyncExecutable \
-    $dryRun \
-    $verbose \
     --log-file="$rsyncLogFilepath" \
     "${includeFromPart[@]}" \
     --recursive --links --times --group --owner --devices --specials --compress \
