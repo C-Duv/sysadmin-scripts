@@ -128,7 +128,7 @@ fi
 
 
 ## Rsync command creation ##
-includeFromPart=""
+includeFromPart=()
 if [ -n "$rsyncIncludeList" ]; then
     includeFromPart=(--include-from="$rsyncIncludeList")
 fi
