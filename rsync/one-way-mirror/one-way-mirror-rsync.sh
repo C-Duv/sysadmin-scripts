@@ -205,5 +205,5 @@ rsyncCommand=($rsyncExecutable \
     "$sourcePart" \
     "$destinationPart"
 )
-${rsyncCommand[@]}
+"${rsyncCommand[@]}"
 ## /Run rsync ##
