@@ -137,7 +137,7 @@ if [ -n "$rsyncRshOtherOptions" ]; then
     rsyncRshOtherOptionsPart=($rsyncRshOtherOptions)
 fi
 
-rshPart=""
+rshPart=()
 # Source parameter
 if [ -n "$sourceHost" ]; then
     sourcePart="$sourceUser@$sourceHost:$sourceDirpath"
@@ -197,10 +197,10 @@ fi
 ## Run rsync ##
 rsyncCommand=($rsyncExecutable \
     --log-file="$rsyncLogFilepath" \
-    "${includeFromPart[@]}" \
+    ${includeFromPart[@]} \
     --recursive --links --times --group --owner --devices --specials --compress \
     --delete --delete-before --delete-excluded \
-    "${otherRsyncOptionsPart[@]}" \
+    ${otherRsyncOptionsPart[@]} \
     "${rshPart[@]}" \
     "$sourcePart" \
     "$destinationPart"
