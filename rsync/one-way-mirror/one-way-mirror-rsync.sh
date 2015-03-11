@@ -122,7 +122,7 @@ fi
 exec 9>$lockFilepath
 if ! flock -n 9 ; then
     echo "I can tell $0 script is already running ($lockFilepath is present since $(stat -c %z $lockFilepath))... exiting this instance"
-    exit 1
+    exit 3
 fi
 
 
