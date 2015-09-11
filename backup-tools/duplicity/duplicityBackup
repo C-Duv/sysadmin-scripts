@@ -28,6 +28,7 @@
 use 5.010;
 
 ##### Modules #####
+use experimental 'smartmatch'; # Debian package "libexperimental-perl"
 use Switch;
 use List::Util qw(max reduce);
 use Hash::Merge::Simple qw/ merge /; # Debian package "libhash-merge-simple-perl"
