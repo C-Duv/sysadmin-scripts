@@ -195,7 +195,11 @@ sub loadConfiguration
 	}
 
 	## Handle "quietUnlessError" mode ##
-	if (defined $config->{'quietUnlessError'} && $config->{'quietUnlessError'} == 1) {
+	my %actionsThatCanBeQuiet = qw(
+		'backup' => 1
+	);
+
+	if (exists $actionsThatCanBeQuiet{$mainAction} && defined $config->{'quietUnlessError'} && $config->{'quietUnlessError'} == 1) {
 		open($quietUnlessErrorStdoutFh, '>', \$stdoutRetainedUntilFirstError) or die 'Failed to create $quietUnlessErrorStdoutFh file handle for "quietUnlessError" mode'; # This shouldn't fail
 
 		# Tie output and Logger to newly created $quietUnlessErrorStdoutFh
