@@ -18,13 +18,17 @@
 #   * Run `pg_dump`.
 #   * Print the path of created backup file.
 #   * Clean.
+#
+# Notes:
+# * Paths to `docker` and `docker-compose` can be adjusted via DOCKER_CLI_FILEPATH
+#   and DOCKERCOMPOSE_CLI_FILEPATH environment variables.
 
 set -euo pipefail
 
 readonly PROGNAME="$(basename -- "$0")"
 
 readonly DOCKER_CLI_FILEPATH="$(which docker)"
-readonly DOCKERCOMPOSE_CLI_FILEPATH="$(which docker-compose)"
+readonly DOCKERCOMPOSE_CLI_FILEPATH="/usr/local/bin/docker-compose"
 
 # PostgreSQL port
 readonly DATABASE_PORT=5432
@@ -58,10 +62,11 @@ fi
 
 # /Arguments handling
 
-# Get PostgreSQL's container ID
+# Move into Docker Compose directory before running docker-compose commands
 cd "${DOCKERCOMPOSE_DIRPATH}"
+
+# Get PostgreSQL's container ID
 DOCKER_DATABASE_CONTAINERID="$(${DOCKERCOMPOSE_CLI_FILEPATH} ps -q "${DOCKERCOMPOSE_DATABASE_SERVICENAME}")"
-cd - > /dev/null
 
 # Get user, password and database name from environment variables passed to the
 # container (looking for POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB respectively)
@@ -95,6 +100,9 @@ ${DOCKERCOMPOSE_CLI_FILEPATH} exec \
 if [ $? -eq 0 ] ; then
     echo "${BACKUP_DESTINATION_FILEPATH}"
 fi
+
+# Move back to previous directory (now that all docker-compose commands were executed)
+cd - > /dev/null
 
 # Delete now-useless local .pgpass file
 rm "${LOCAL_POSTGRESQL_PGPASSFILE_FILEPATH}"
