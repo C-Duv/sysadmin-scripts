@@ -87,6 +87,7 @@ BACKUP_DESTINATION_FILEPATH="${BACKUP_DESTINATION_DIRPATH}/${DB_NAME}.${BACKUP_D
 # Executes `pg_dump` on database $DB_NAME as $DB_USER using the .pgpass file
 # designated by "PGPASSFILE" environment variable (=)
 ${DOCKERCOMPOSE_CLI_FILEPATH} exec \
+    -T \
     --env "PGPASSFILE=${CONTAINER_POSTGRESQL_PGPASSFILE_FILEPATH}" \
     "${DOCKERCOMPOSE_DATABASE_SERVICENAME}" \
     pg_dump \
